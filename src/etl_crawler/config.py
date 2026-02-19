@@ -4,7 +4,7 @@ Configuration Settings for the ETL Crawler
 
 import os
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import Field, model_validator
+from pydantic import Field
 
 _env = os.getenv("ENV", "")
 
@@ -37,4 +37,4 @@ class AppSettings(BaseSettings):
     AZURE_OPENAI_VECTORIZER_ENDPOINT: str
     
 
-    model_config = SettingsConfigDict(env_file=_app_env_file, env_file_encoding="utf-8")
+    model_config = SettingsConfigDict(env_file=_app_env_file, env_file_encoding="utf-8", extra="ignore")
