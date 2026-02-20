@@ -1,0 +1,9 @@
+.env.etl
+.env.dev.app
+.env.prod.app
+.venv
+data/
+__pycache__/
+*.pyc
+.pytest_cache/
+pytest-cache-files-*/

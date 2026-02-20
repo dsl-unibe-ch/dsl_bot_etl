@@ -1,0 +1,382 @@
+"""Step 4 — Index: build an Azure AI Search index from processed_data.xlsx."""
+
+from __future__ import annotations
+
+import json
+import logging
+import sys
+from dataclasses import dataclass
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+import pandas as pd
+from azure.core.credentials import AzureKeyCredential
+from azure.core.exceptions import HttpResponseError
+from azure.search.documents import SearchClient
+from azure.search.documents.indexes import SearchIndexClient
+from azure.search.documents.indexes.models import (
+    AzureOpenAIVectorizer,
+    AzureOpenAIVectorizerParameters,
+    HnswAlgorithmConfiguration,
+    SearchableField,
+    SearchField,
+    SearchFieldDataType,
+    SearchIndex,
+    SemanticConfiguration,
+    SemanticField,
+    SemanticSearch,
+    SimpleField,
+    VectorSearch,
+    VectorSearchProfile,
+)
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_experimental.text_splitter import SemanticChunker
+from langchain_openai import AzureChatOpenAI
+from openai import AzureOpenAI
+from tqdm import tqdm
+
+#NoQA: F401 Used to prevent circular import of RunContext from pipeline.py during static type checking
+if TYPE_CHECKING:
+    from src.etl_crawler.config import AppSettings
+    from src.etl_crawler.pipeline import RunContext
+
+logger = logging.getLogger(__name__)
+
+HTTP_STATUS_BAD_REQUEST = 400
+HTTP_STATUS_NOT_FOUND = 404
+
+
+
+
+def german2english(text: str, settings: AppSettings) -> str:
+    """Translate German text to English."""
+    translation_system_prompt = """Translate in English the following text.
+
+    ** Important: **
+    - do not translate links, email addresses, names of people and places.
+    - keep the format of the original text (e.g. if there are bullet points, keep them).
+
+    Text: {input}
+    The translated text is: {{output}}
+    """
+
+    translation_prompt = ChatPromptTemplate.from_messages(
+        [
+            ("system", translation_system_prompt),
+            ("human", "{input}"),
+        ]
+    )
+
+    chat_client = AzureChatOpenAI(
+        azure_deployment=settings.AZURE_OPENAI_CHAT_DEPLOYMENT,
+        api_version=settings.AZURE_OPENAI_CHAT_API_VERSION,
+        azure_endpoint=settings.AZURE_OPENAI_ENDPOINT,
+        api_key=settings.AZURE_OPENAI_PRIMARY_KEY,
+    )
+
+    translation_chain = translation_prompt | chat_client
+    return translation_chain.invoke({"input": text}).content # type: ignore
+
+class AzureEmbeddingWrapper:
+    """Adapter so SemanticChunker can call our Azure embedding client."""
+
+    def __init__(self, embedding_client: AzureOpenAI, deployment: str) -> None:
+        self._client = embedding_client
+        self._deployment = deployment
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        return [self._get_embedding(t) for t in texts]
+
+    def embed_query(self, text: str) -> list[float]:
+        return self._get_embedding(text)
+
+    def _get_embedding(self, text: str) -> list[float]:
+        resp = self._client.embeddings.create(input=[text], model=self._deployment)
+        return resp.data[0].embedding
+
+
+def _generate_chunk_title(chunk: str, settings: AppSettings) -> str:
+    """Generate a concise and informative title for a document chunk."""
+    prompt = ChatPromptTemplate.from_messages([
+        ("system",
+         "Given the following document chunk, generate a concise and informative "
+         "title that summarizes its main topic or purpose.\n\n"
+         "Document chunk: {input}\nThe title generated is: {{output}}"),
+        ("human", "{input}"),
+    ])
+    chat = AzureChatOpenAI(
+        azure_deployment=settings.AZURE_OPENAI_CHAT_DEPLOYMENT,
+        api_version=settings.AZURE_OPENAI_CHAT_API_VERSION,
+        azure_endpoint=settings.AZURE_OPENAI_ENDPOINT,
+        api_key=settings.AZURE_OPENAI_PRIMARY_KEY,
+    )
+    try:
+        return (prompt | chat).invoke({"input": chunk}).content
+    except Exception:
+        return "No title generated"
+
+
+def _build_index_schema(index_name: str, settings: AppSettings) -> SearchIndex:
+    vectorizer = AzureOpenAIVectorizer(
+        vectorizer_name="myTextEmbedding3LargeVectorizer",
+        parameters=AzureOpenAIVectorizerParameters(
+            resource_url=settings.AZURE_OPENAI_VECTORIZER_ENDPOINT,
+            deployment_name=settings.AZURE_OPENAI_SEARCH_EMBEDDING_DEPLOYMENT,
+            api_key=settings.AZURE_OPENAI_PRIMARY_KEY,
+            model_name=settings.AZURE_OPENAI_SEARCH_EMBEDDING_DEPLOYMENT,
+        ),
+    )
+    vector_search = VectorSearch(
+        algorithms=[
+            HnswAlgorithmConfiguration(
+                name="myHnswAlgorithm",
+                parameters={"m": 4, "efConstruction": 400, "efSearch": 500, "metric": "cosine"},
+            )
+        ],
+        profiles=[
+            VectorSearchProfile(
+                name="myVectorProfile",
+                algorithm_configuration_name="myHnswAlgorithm",
+                vectorizer_name="myTextEmbedding3LargeVectorizer",
+            )
+        ],
+        vectorizers=[vectorizer],
+    )
+    semantic_config = SemanticConfiguration(
+        name="mySemanticConfig",
+        prioritized_fields={
+            "title_field": SemanticField(field_name="Title_Chunk"),
+            "content_fields": [
+                SemanticField(field_name="chunk"),
+                SemanticField(field_name="Example_Questions"),
+            ],
+            "keywords_fields": [SemanticField(field_name="Keyword")],
+        },
+    )
+    fields = [
+        SimpleField(name="chunk_id", type=SearchFieldDataType.String, key=True),
+        SearchableField(name="DocumentID", type=SearchFieldDataType.String),
+        SearchableField(name="Link", type=SearchFieldDataType.String),
+        SearchableField(name="Title", type=SearchFieldDataType.String),
+        SearchableField(name="Title_Chunk", type=SearchFieldDataType.String),
+        SearchableField(name="Category", type=SearchFieldDataType.String),
+        SearchableField(name="Local_Path", type=SearchFieldDataType.String),
+        SearchableField(name="Local_Path_PDF", type=SearchFieldDataType.String),
+        SearchableField(name="Date_Last_Modified", type=SearchFieldDataType.String),
+        SearchableField(name="Data_Gathered_On", type=SearchFieldDataType.DateTimeOffset),
+        SearchableField(name="chunk", type=SearchFieldDataType.String),
+        SearchableField(name="chunk_translated", type=SearchFieldDataType.String),
+        SearchableField(name="Keyword", type=SearchFieldDataType.String),
+        SearchField(
+            name="Example_Questions",
+            type=SearchFieldDataType.Collection(SearchFieldDataType.String),
+            facetable=False,
+            filterable=False,
+        ),
+        SearchField(
+            name="text_vector",
+            type=SearchFieldDataType.Collection(SearchFieldDataType.Single),
+            vector_search_dimensions=3072,
+            vector_search_profile_name="myVectorProfile",
+            hidden=False,
+            stored=True,
+        ),
+    ]
+    return SearchIndex(
+        name=index_name,
+        fields=fields,
+        vector_search=vector_search,
+        semantic_search=SemanticSearch(configurations=[semantic_config]),
+    )
+
+
+def _find_previous_run_json(data_dir: Path, env_label: str) -> Path | None:
+    """Find the JSON export from the most recent previous run for this customer."""
+    customer_dir = data_dir.parent
+    if not customer_dir.exists():
+        return None
+
+    json_filename = f"processed_data_azure_semantic_search_{env_label}.json"
+    candidates: list[Path] = []
+    for entry in customer_dir.iterdir():
+        if entry.is_dir() and entry != data_dir:
+            json_path = entry / json_filename
+            if json_path.exists():
+                candidates.append(json_path)
+
+    if not candidates:
+        return None
+    return max(candidates, key=lambda p: p.stat().st_mtime)
+
+
+def _generate_change_summary(
+    new_documents: list[dict],
+    previous_json_path: Path | None,
+) -> dict:
+    """Compare new documents against a previous run's export."""
+    summary: dict = {"new_chunk_count": len(new_documents)}
+
+    if not previous_json_path or not previous_json_path.exists():
+        summary["status"] = "first_run"
+        return summary
+
+    with previous_json_path.open(encoding="utf-8") as f:
+        old_documents = json.load(f)
+
+    old_links = {d["Link"] for d in old_documents}
+    new_links = {d["Link"] for d in new_documents}
+
+    summary.update({
+        "status": "update",
+        "previous_run": str(previous_json_path.parent.name),
+        "old_chunk_count": len(old_documents),
+        "added_sources": sorted(new_links - old_links),
+        "removed_sources": sorted(old_links - new_links),
+        "unchanged_source_count": len(old_links & new_links),
+    })
+    return summary
+
+
+def run_etl(xlsx_path: Path, index_name: str, settings: AppSettings, output_dir: Path) -> dict:
+    """Core ETL: prepare documents, generate change summary, then replace the index."""
+
+    embedding_client = AzureOpenAI(
+        azure_endpoint=settings.AZURE_OPENAI_ENDPOINT,
+        azure_deployment=settings.AZURE_OPENAI_SEARCH_EMBEDDING_DEPLOYMENT,
+        api_version=settings.AZURE_OPENAI_SEARCH_EMBEDDING_API_VERSION,
+        api_key=settings.AZURE_OPENAI_PRIMARY_KEY,
+    )
+    wrapper = AzureEmbeddingWrapper(embedding_client, settings.AZURE_OPENAI_SEARCH_EMBEDDING_DEPLOYMENT)
+    text_splitter = SemanticChunker(wrapper)
+
+    # --- Phase 1: prepare all documents (slow, may fail) ---
+    df = pd.read_excel(xlsx_path, sheet_name="Sheet1")
+    documents: list[dict] = []
+    chunk_id = 0
+    logger.info("Processing %d rows from %s", len(df), xlsx_path.name)
+
+    for _, row in tqdm(df.iterrows(), total=len(df), desc="Processing rows to create chunks"):
+        chunks = text_splitter.create_documents([row["text"]])
+        for chunk in chunks:
+            content = chunk.page_content.strip()
+            if not content:
+                continue
+            title_chunk = _generate_chunk_title(content, settings)
+            vector = wrapper.embed_query(content)
+            try:
+                translated = german2english(content, settings)
+            except Exception:
+                translated = "No translation generated"
+            documents.append({
+                "chunk_id": f"doc_{chunk_id}",
+                "DocumentID": row["DocumentID"],
+                "Link": row["Link"],
+                "Title": row["Title"],
+                "Title_Chunk": title_chunk,
+                "Category": row["Category"],
+                "Local_Path": row["Local_Path"],
+                "Local_Path_PDF": row["Local_Path_PDF"],
+                "Date_Last_Modified": row["Date_Last_Modified"],
+                "Data_Gathered_On": row["Data_Gathered_On"],
+                "chunk": content,
+                "chunk_translated": translated,
+                "Keyword": row["Keyword"],
+                "Example_Questions": row["Example_Questions"].split(","),
+                "text_vector": vector,
+            })
+            chunk_id += 1
+
+    logger.info("Prepared %d chunks. Saving local copy...", len(documents))
+    env_label = settings.ENV or "dev"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    json_out = output_dir / f"processed_data_azure_semantic_search_{env_label}.json"
+    with json_out.open("w", encoding="utf-8") as f:
+        json.dump(documents, f, indent=2, ensure_ascii=False)
+
+    # --- Phase 1.5: compare against previous run ---
+    previous_json = _find_previous_run_json(output_dir, env_label)
+    change_summary = _generate_change_summary(documents, previous_json)
+
+    report_path = output_dir / "index_report.json"
+    with report_path.open("w", encoding="utf-8") as f:
+        json.dump(change_summary, f, indent=2, ensure_ascii=False)
+
+    if change_summary.get("status") == "first_run":
+        logger.info("First run — no previous index to compare against. %d new chunks.", len(documents))
+    else:
+        logger.info(
+            "Change summary vs run %s: %d -> %d chunks, +%d sources, -%d sources, %d unchanged",
+            change_summary.get("previous_run", "?"),
+            change_summary.get("old_chunk_count", 0),
+            change_summary["new_chunk_count"],
+            len(change_summary.get("added_sources", [])),
+            len(change_summary.get("removed_sources", [])),
+            change_summary.get("unchanged_source_count", 0),
+        )
+        if change_summary.get("added_sources"):
+            for src in change_summary["added_sources"]:
+                logger.info("  + %s", src)
+        if change_summary.get("removed_sources"):
+            for src in change_summary["removed_sources"]:
+                logger.info("  - %s", src)
+
+    # --- Phase 2: replace index and upload (only after all docs are ready) ---
+    index_client = SearchIndexClient(
+        settings.AZURE_SEARCH_ENDPOINT,
+        AzureKeyCredential(settings.AZURE_SEARCH_SERVICE_PRIMARY_ADMIN_KEY),
+    )
+    index_schema = _build_index_schema(index_name, settings)
+
+    try:
+        index_client.delete_index(index_name)
+        logger.info("Deleted existing index '%s'.", index_name)
+    except HttpResponseError as e:
+        if e.status_code != HTTP_STATUS_NOT_FOUND:
+            raise
+
+    try:
+        index_client.create_index(index_schema)
+        logger.info("Index '%s' created.", index_name)
+    except HttpResponseError:
+        logger.exception("Failed to create index '%s'.", index_name)
+        sys.exit(1)
+
+    search_client = SearchClient(
+        settings.AZURE_SEARCH_ENDPOINT,
+        index_name,
+        AzureKeyCredential(settings.AZURE_SEARCH_SERVICE_PRIMARY_ADMIN_KEY),
+    )
+    try:
+        upload_result = search_client.upload_documents(documents)
+        logger.info("Uploaded %d documents", len(documents))
+        for res in upload_result:
+            logger.debug("  %s: %s", res.key, res.succeeded)
+    except (HttpResponseError, ValueError, TypeError):
+        logger.exception("Error uploading documents")
+
+    return {"index_name": index_name, "chunk_count": len(documents)}
+
+
+# ---------------------------------------------------------------------------
+# Step entry-point
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class IndexResult:
+    index_name: str
+    chunk_count: int
+
+
+def run(run_context: RunContext) -> IndexResult:
+    """Build and populate the Azure AI Search index."""
+    xlsx_path = run_context.data_dir / "processed_data.xlsx"
+    if not xlsx_path.exists():
+        raise FileNotFoundError(f"processed_data.xlsx not found in {run_context.data_dir}")
+
+    index_name = f"kb-{run_context.customer_name}"
+    summary = run_etl(xlsx_path, index_name, run_context.app_settings, run_context.data_dir)
+
+    result = IndexResult(index_name=summary["index_name"], chunk_count=summary["chunk_count"])
+    logger.info("Indexing finished: %s (%d chunks)", result.index_name, result.chunk_count)
+    return result
