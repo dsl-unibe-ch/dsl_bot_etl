@@ -4,8 +4,7 @@ This repository contains the code for ETL pipeline of the Kioskbot Project that 
 
 
 ## Architecture
-<details>
-<summary>Click to expand</summary>
+
 
 ```mermaid
 flowchart TD
@@ -35,7 +34,7 @@ flowchart TD
   ACR -.->|image| DevJob
   ACR -.->|image| ProdJob
 ```
-</details>
+
 
 ## Project Structure
 <details>
