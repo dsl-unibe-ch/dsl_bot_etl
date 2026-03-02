@@ -9,28 +9,34 @@ This repository contains the code for ETL pipeline of the Kioskbot Project that 
 ```mermaid
 flowchart TD
   subgraph daily [Daily Cron - 2:00 AM UTC]
-    DevTrigger["Daily cron 2:00 AM UTC (dev)"]  
+    DevTrigger["Daily cron 2:00 AM UTC (dev)"]
     DevJob["Container Apps Job"]
+    DevTrigger --> DevJob
   end
+
   DevJob -->|1| Secrets["Download env"]
   Secrets -->|2| Pipeline["Run pipeline-all"]
+
   subgraph etlPipeline [Pipeline Stages]
     Crawl["1 crawl"]
     Extract["2 extract"]
     PostProcess["3 post process"]
     Index["4 create index"]
-    Crawl --> Extract --> PostProcess --> Create Index
+    Crawl --> Extract --> PostProcess --> Index
   end
+
   Pipeline --> Crawl
   Index -->|3| SmokeTest["Smoke test AI Search"]
   SmokeTest -->|4| Notify["Webhook notification (Optional)"]
   Notify -.->|5 manual approval| Operator["Operator reviews dev"]
   Operator -.->|"make trigger ENV=prod PROD_APPROVED=YES"| ProdJob["Trigger prod manual"]
   ProdJob --> ProdPipeline["Same flow secrets to pipeline to smoke test"]
+
   subgraph shared [Shared Infrastructure]
     ACR["ACR crkbglobal001 in rg-kb-global-001"]
     BlobStorage["Blob Storage kioskbot-secrets"]
   end
+
   ACR -.->|image| DevJob
   ACR -.->|image| ProdJob
 ```
