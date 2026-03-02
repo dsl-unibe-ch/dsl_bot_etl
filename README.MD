@@ -2,6 +2,8 @@
 
 ETL pipeline that crawls customer websites, extracts content, enriches it with keywords and questions via Azure OpenAI, and indexes it into Azure AI Search.
 
+The ETL pipeline runs as scheduled jobs (one for `dev` and one for `prod`) inside a Azure container job
+
 ## Architecture
 
 ```
@@ -42,7 +44,7 @@ customer.yml ─→ [1. crawl] ─→ url_list.jsonl
               .env.{ENV}.app ─→ [4. index] ─→ Azure AI Search Index
 ```
 
-Each step exposes a `run(ctx: RunContext)` function that receives a shared context (customer name, data directory, YAML config, app settings) and returns a typed result. Steps are independently testable and can be run individually or as a full pipeline.
+Each step exposes a `run(run_context: RunContext)` function that receives a shared context (customer name, data directory, YAML config, app settings) and returns a typed result. Steps are independently testable and can be run individually or as a full pipeline.
 
 ## Prerequisite
 

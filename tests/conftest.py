@@ -47,7 +47,7 @@ def sample_customer_config() -> dict:
 
 
 @pytest.fixture()
-def ctx(tmp_data_dir: Path, mock_app_settings: AppSettings, sample_customer_config: dict) -> RunContext:
+def run_context(tmp_data_dir: Path, mock_app_settings: AppSettings, sample_customer_config: dict) -> RunContext:
     """Return a RunContext wired up for testing."""
     return RunContext(
         customer_name="test_customer",

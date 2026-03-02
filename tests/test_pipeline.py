@@ -37,7 +37,7 @@ class TestResolveDataDir:
 
 
 class TestRunContext:
-    def test_dataclass_fields(self, ctx: RunContext):
-        assert ctx.customer_name == "test_customer"
-        assert ctx.data_dir.exists()
-        assert isinstance(ctx.customer_config, dict)
+    def test_dataclass_fields(self, run_context: RunContext):
+        assert run_context.customer_name == "test_customer"
+        assert run_context.data_dir.exists()
+        assert isinstance(run_context.customer_config, dict)

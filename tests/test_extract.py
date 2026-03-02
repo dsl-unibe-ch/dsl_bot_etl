@@ -48,20 +48,20 @@ class TestPDFContentExtractor:
 
 
 class TestExtractStep:
-    def test_run_raises_if_no_url_list(self, ctx):
+    def test_run_raises_if_no_url_list(self, run_context):
         from src.etl_crawler.steps.extract import run
 
         try:
-            run(ctx)
+            run(run_context)
             assert False, "Should have raised FileNotFoundError"
         except FileNotFoundError:
             pass
 
-    def test_run_with_empty_url_list(self, ctx):
+    def test_run_with_empty_url_list(self, run_context):
         from src.etl_crawler.steps.extract import run
 
-        url_list = ctx.data_dir / "url_list.jsonl"
+        url_list = run_context.data_dir / "url_list.jsonl"
         url_list.write_text("", encoding="utf-8")
-        result = run(ctx)
+        result = run(run_context)
         assert result.url_count == 0
         assert result.pdf_count == 0

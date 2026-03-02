@@ -58,11 +58,11 @@ class TestKeywordQuestionResponse:
 
 
 class TestPostProcessStep:
-    def test_run_raises_if_no_content_jsonl(self, ctx):
+    def test_run_raises_if_no_content_jsonl(self, run_context):
         from src.etl_crawler.steps.post_process import run
 
         try:
-            run(ctx)
+            run(run_context)
             assert False, "Should have raised FileNotFoundError"
         except FileNotFoundError:
             pass
