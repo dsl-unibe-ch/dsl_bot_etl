@@ -27,14 +27,14 @@ flowchart TD
 
   Pipeline --> Crawl
   Index -->|3| SmokeTest["Smoke test AI Search"]
-  SmokeTest -->|4| Notify["Webhook notification (Optional)"]
+  SmokeTest -->|4| Notify["Notification (Optional)"]
   Notify -.->|5 manual approval| Operator["Operator reviews dev"]
   Operator -.->|"make trigger ENV=prod PROD_APPROVED=YES"| ProdJob["Trigger prod manual"]
-  ProdJob --> ProdPipeline["Same flow secrets to pipeline to smoke test"]
+  ProdJob --> ProdPipeline["Same steps in Prod"]
 
   subgraph shared [Shared Infrastructure]
-    ACR["ACR crkbglobal001 in rg-kb-global-001"]
-    BlobStorage["Blob Storage kioskbot-secrets"]
+    ACR["ACR global"]
+    BlobStorage["Blob Storage"]
   end
 
   ACR -.->|image| DevJob
@@ -45,8 +45,6 @@ The infrastructure is the same for both dev and prod environments. However the r
 
 The job for `dev` is triggered daily at the specified time. Within the job, the smoke tests are performed. 
 The smoke tests results are viewable inside the logs. In the future, further evaluation steps will be added. If the results are satisfactory, the `prod` job can be manually triggered. The separation of `dev` and `prod` jobs is done to ensure quality of the index created to minimise the disruption.  
-
-
 
 
 ## Project Structure
@@ -277,12 +275,6 @@ The pipeline is deployed to Azure as two **Container Apps Jobs**:
 - **dev job**: scheduled daily via cron
 - **prod job**: manual trigger after dev validation
 
-### Provisioning Steps
-
-1. Azure CLI installed and logged in (`az login`)
-2. `.env.etl` fully populated (see [Configure the Environment Variables](#configure-the-environment-variables))
-3. 
-
 
 ### Configuration
 
@@ -312,6 +304,69 @@ Image and job naming are derived from `pyproject.toml`:
 - `VERSION` = `version` (e.g. `0.1.0`)
 - Job names = sanitized and truncated `{PROJECT_NAME}-{VERSION}-dev|prod` (e.g. `kioskbot-etl-0-1-0-dev`)
 - Image tag = `{ACR_LOGIN_SERVER}/{PROJECT_NAME}:{VERSION}` (e.g. `crkbglobal001.azurecr.io/kioskbot-etl:0.1.0`)
+
+### Deploy Container
+The container image needs to be present beforehand as this is needed during the provisioning of the job (not infra)
+
+1. Build/push image first:
+
+```bash
+make docker-build-image
+```
+2. Push Image
+
+```bash
+make docker-build-image
+make docker-push-image ACR_USERNAME="<acr-user>" ACR_PASSWORD="<acr-password>"
+```
+
+### Provisioning Steps
+
+1. Azure CLI installed and logged in (`az login`)
+2. Configure the Environment Variables as described in [Configure the Environment Variables](#configure-the-environment-variables) section.
+3. Provision the resource group and the container group (once only):
+
+  ```bash
+  make provision-rg
+  make provision-infra
+  ```
+
+### Create/ Update Crawl Jobs
+
+1. Before updating any job, first build and push the latest image from the [Deploy Container](#deploy-container) section.
+
+2. Update **dev** job (scheduled):
+  ```bash
+  make provision-dev ACR_USERNAME="<acr-user>" ACR_PASSWORD="<acr-password>"
+  ```
+3. Verify dev job configuration:
+  ```bash
+  make job-name ENV=dev
+  make job-trigger ENV=dev
+  make job-cron ENV=dev
+  ```
+4. Update **prod** job (manual trigger):
+  ```bash
+  make provision-prod ACR_USERNAME="<acr-user>" ACR_PASSWORD="<acr-password>"
+  ```
+5. Verify prod job configuration:
+  ```bash
+  make job-name ENV=prod
+  make job-trigger ENV=prod
+  make job-cron ENV=prod
+  ```
+  `job-cron` should be empty for prod because it is manual.
+6. Trigger `dev` and observe:
+  ```bash
+  make trigger ENV=dev
+  make logs ENV=dev
+7. Review the smoke test results. If approved, go to step 8. Otherwise, fix bug and repeat steps from 1-6.
+8. Trugger `prod`
+  make trigger ENV=prod PROD_APPROVED=YES
+  make logs ENV=prod
+  ```
+
+**Note:** Both `provision-dev` and `provision-prod` validate that the image tag exists in ACR before creating jobs.
 
 ### Daily flow
 
@@ -346,41 +401,6 @@ make trigger ENV=prod PROD_APPROVED=YES
 - Secrets strategy: Storage connection string is read from `.env.etl`; ACR credentials are passed at runtime as `ACR_USERNAME` and `ACR_PASSWORD` when creating jobs
 - Logging workspace: `provision-infra` creates/uses a fixed Log Analytics workspace name from `.env.etl` (`AZURE_LOG_ANALYTICS_WORKSPACE_NAME`) instead of auto-generated names
 
-### Provision and operate
-
-Build/push image first:
-
-```bash
-make docker-build-image
-make docker-push-image ACR_USERNAME="<acr-user>" ACR_PASSWORD="<acr-password>"
-```
-
-Provision base infrastructure once:
-
-```bash
-make provision-rg
-make provision-infra
-```
-
-Create the **dev** job (scheduled):
-
-```bash
-make provision-dev ACR_USERNAME="<acr-user>" ACR_PASSWORD="<acr-password>"
-```
-
-Create the **prod** job (manual trigger):
-
-```bash
-make provision-prod ACR_USERNAME="<acr-user>" ACR_PASSWORD="<acr-password>"
-```
-
-Both `provision-dev` and `provision-prod` validate that the image tag exists in ACR before creating jobs.
-
-Build/push latest image (shortcut):
-
-```bash
-make deploy
-```
 
 ### Useful commands
 
@@ -392,7 +412,11 @@ make deploy
 | `make provision-infra` | Create Container Apps environment + Log Analytics workspace |
 | `make provision-dev ACR_USERNAME="..." ACR_PASSWORD="..."` | Create/update dev job (requires ACR credentials) |
 | `make provision-prod ACR_USERNAME="..." ACR_PASSWORD="..."` | Create/update prod job (requires ACR credentials) |
-| `make deploy` | Shortcut for `docker-build-image` + `docker-push-image` |
+| `make jobs-list` | List all Container Apps jobs in the ETL resource group |
+| `make job-name ENV=dev` | Print resolved job name for `ENV` |
+| `make job-show ENV=dev` | Show full job configuration for `ENV` |
+| `make job-trigger ENV=dev` | Show trigger type (`Schedule` or `Manual`) |
+| `make job-cron ENV=dev` | Show cron expression (empty for manual jobs) |
 | `make trigger ENV=dev` | Manually start the dev job |
 | `make trigger ENV=prod PROD_APPROVED=YES` | Manually start the prod job (guarded) |
 | `make kill ENV=dev` | Stop all currently running dev executions |

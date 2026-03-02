@@ -105,12 +105,19 @@ notify:
 # ---------- Provision infrastructure ----------
 
 require-acr-creds:
-	@test -n "$(ACR_USERNAME)" || (echo "Error: ACR_USERNAME is required."; echo "Usage: make provision ACR_USERNAME='<acr-user>' ACR_PASSWORD='<acr-pass>'"; exit 1)
-	@test -n "$(ACR_PASSWORD)" || (echo "Error: ACR_PASSWORD is required."; echo "Usage: make provision ACR_USERNAME='<acr-user>' ACR_PASSWORD='<acr-pass>'"; exit 1)
+	@test -n "$(ACR_USERNAME)" || (echo "Error: ACR_USERNAME is required."; echo "Usage: make provision-dev ACR_USERNAME='<acr-user>' ACR_PASSWORD='<acr-pass>'"; exit 1)
+	@test -n "$(ACR_PASSWORD)" || (echo "Error: ACR_PASSWORD is required."; echo "Usage: make provision-dev ACR_USERNAME='<acr-user>' ACR_PASSWORD='<acr-pass>'"; exit 1)
 
 require-env:
 	@test -n "$(ENV)" || (echo "Error: ENV is required (dev or prod). Usage: make logs ENV=dev"; exit 1)
 	@test "$(ENV)" = "dev" -o "$(ENV)" = "prod" || (echo "Error: ENV must be 'dev' or 'prod'."; exit 1)
+
+require-prod-approval:
+	@if [ "$(ENV)" = "prod" ] && [ "$(PROD_APPROVED)" != "YES" ]; then \
+	  echo "Refusing to trigger prod without explicit approval."; \
+	  echo "Use: make trigger ENV=prod PROD_APPROVED=YES"; \
+	  exit 1; \
+	fi
 
 require-image-in-acr:
 	@tag_exists=$$(az acr repository show-tags \
@@ -136,73 +143,51 @@ provision-infra:
 	  --logs-workspace-id "$$(az monitor log-analytics workspace show --resource-group $(AZURE_ETL_RESOURCE_GROUP_NAME) --workspace-name $(AZURE_LOG_ANALYTICS_WORKSPACE_NAME) --query customerId -o tsv)" \
 	  --logs-workspace-key "$$(az monitor log-analytics workspace get-shared-keys --resource-group $(AZURE_ETL_RESOURCE_GROUP_NAME) --workspace-name $(AZURE_LOG_ANALYTICS_WORKSPACE_NAME) --query primarySharedKey -o tsv)"
 
-provision-dev: require-acr-creds require-image-in-acr
-	az containerapp job create \
-	  --name $(JOB_NAME)-dev \
+provision-job: require-acr-creds require-image-in-acr require-env
+	@trigger_type=Manual; \
+	cron_args=""; \
+	if [ "$(ENV)" = "dev" ]; then \
+	  trigger_type=Schedule; \
+	  cron_args='--cron-expression "0 2 * * *"'; \
+	fi; \
+	eval "az containerapp job create \
+	  --name $(JOB_NAME)-$(ENV) \
 	  --resource-group $(AZURE_ETL_RESOURCE_GROUP_NAME) \
 	  --environment $(AZURE_CONTAINER_APP_ENV_NAME) \
 	  --image $(IMAGE_TAG) \
 	  --registry-server $(AZURE_CONTAINER_REGISTRY_LOGIN_SERVER) \
-	  --registry-username "$(ACR_USERNAME)" \
-	  --registry-password "$(ACR_PASSWORD)" \
-	  --trigger-type Schedule \
-	  --cron-expression "0 2 * * *" \
+	  --registry-username \"$(ACR_USERNAME)\" \
+	  --registry-password \"$(ACR_PASSWORD)\" \
+	  --trigger-type $$trigger_type \
+	  $$cron_args \
 	  --parallelism $(PARALLELISM) \
 	  --replica-completion-count $(REPLICA_COMPLETION_COUNT) \
 	  --replica-timeout 28800 \
 	  --replica-retry-limit $(REPLICA_RETRY_LIMIT) \
 	  --cpu 2 --memory 4Gi \
 	  --env-vars \
-	    ENV=dev \
+	    ENV=$(ENV) \
 	    AZURE_STORAGE_ACCOUNT_PRIMARY_CONNECTION_STRING=secretref:storage-conn-str \
 	    AZURE_CONTAINER_STORAGE_NAME=kioskbot-logs \
 	    AZURE_CONTAINER_STORAGE_SECRETS_NAME=kioskbot-secrets \
-	    AZURE_ETL_RESOURCE_GROUP_NAME="$(AZURE_ETL_RESOURCE_GROUP_NAME)" \
-	    AZURE_CONTAINER_REGISTRY_NAME="$(AZURE_CONTAINER_REGISTRY_NAME)" \
-	    AZURE_CONTAINER_REGISTRY_LOGIN_SERVER="$(AZURE_CONTAINER_REGISTRY_LOGIN_SERVER)" \
-	    AZURE_RESOURCE_GROUP_LOCATION="$(AZURE_RESOURCE_GROUP_LOCATION)" \
-	    AZURE_CONTAINER_APP_ENV_NAME="$(AZURE_CONTAINER_APP_ENV_NAME)" \
-	    AZURE_LOG_ANALYTICS_WORKSPACE_NAME="$(AZURE_LOG_ANALYTICS_WORKSPACE_NAME)" \
-	    WEBHOOK_URL="$(WEBHOOK_URL)" \
-	    CUSTOMER_NAME_LIST="$(CUSTOMER_NAME_LIST)" \
+	    AZURE_ETL_RESOURCE_GROUP_NAME=\"$(AZURE_ETL_RESOURCE_GROUP_NAME)\" \
+	    AZURE_CONTAINER_REGISTRY_NAME=\"$(AZURE_CONTAINER_REGISTRY_NAME)\" \
+	    AZURE_CONTAINER_REGISTRY_LOGIN_SERVER=\"$(AZURE_CONTAINER_REGISTRY_LOGIN_SERVER)\" \
+	    AZURE_RESOURCE_GROUP_LOCATION=\"$(AZURE_RESOURCE_GROUP_LOCATION)\" \
+	    AZURE_CONTAINER_APP_ENV_NAME=\"$(AZURE_CONTAINER_APP_ENV_NAME)\" \
+	    AZURE_LOG_ANALYTICS_WORKSPACE_NAME=\"$(AZURE_LOG_ANALYTICS_WORKSPACE_NAME)\" \
+	    WEBHOOK_URL=\"$(WEBHOOK_URL)\" \
+	    CUSTOMER_NAME_LIST=\"$(CUSTOMER_NAME_LIST)\" \
 	  --secrets \
-	    storage-conn-str="$(STORAGE_CONN_STR)"
+	    storage-conn-str=\"$(STORAGE_CONN_STR)\""
+
+provision-dev: require-acr-creds require-image-in-acr
+	@$(MAKE) provision-job ENV=dev ACR_USERNAME="$(ACR_USERNAME)" ACR_PASSWORD="$(ACR_PASSWORD)"
 
 provision-prod: require-acr-creds require-image-in-acr
-	az containerapp job create \
-	  --name $(JOB_NAME)-prod \
-	  --resource-group $(AZURE_ETL_RESOURCE_GROUP_NAME) \
-	  --environment $(AZURE_CONTAINER_APP_ENV_NAME) \
-	  --image $(IMAGE_TAG) \
-	  --registry-server $(AZURE_CONTAINER_REGISTRY_LOGIN_SERVER) \
-	  --registry-username "$(ACR_USERNAME)" \
-	  --registry-password "$(ACR_PASSWORD)" \
-	  --trigger-type Manual \
-	  --parallelism $(PARALLELISM) \
-	  --replica-completion-count $(REPLICA_COMPLETION_COUNT) \
-	  --replica-timeout 28800 \
-	  --replica-retry-limit $(REPLICA_RETRY_LIMIT) \
-	  --cpu 2 --memory 4Gi \
-	  --env-vars \
-	    ENV=prod \
-	    AZURE_STORAGE_ACCOUNT_PRIMARY_CONNECTION_STRING=secretref:storage-conn-str \
-	    AZURE_CONTAINER_STORAGE_NAME=kioskbot-logs \
-	    AZURE_CONTAINER_STORAGE_SECRETS_NAME=kioskbot-secrets \
-	    AZURE_ETL_RESOURCE_GROUP_NAME="$(AZURE_ETL_RESOURCE_GROUP_NAME)" \
-	    AZURE_CONTAINER_REGISTRY_NAME="$(AZURE_CONTAINER_REGISTRY_NAME)" \
-	    AZURE_CONTAINER_REGISTRY_LOGIN_SERVER="$(AZURE_CONTAINER_REGISTRY_LOGIN_SERVER)" \
-	    AZURE_RESOURCE_GROUP_LOCATION="$(AZURE_RESOURCE_GROUP_LOCATION)" \
-	    AZURE_CONTAINER_APP_ENV_NAME="$(AZURE_CONTAINER_APP_ENV_NAME)" \
-	    AZURE_LOG_ANALYTICS_WORKSPACE_NAME="$(AZURE_LOG_ANALYTICS_WORKSPACE_NAME)" \
-	    WEBHOOK_URL="$(WEBHOOK_URL)" \
-	    CUSTOMER_NAME_LIST="$(CUSTOMER_NAME_LIST)" \
-	  --secrets \
-	    storage-conn-str="$(STORAGE_CONN_STR)"
+	@$(MAKE) provision-job ENV=prod ACR_USERNAME="$(ACR_USERNAME)" ACR_PASSWORD="$(ACR_PASSWORD)"
 
-provision: provision-rg provision-infra provision-dev provision-prod
-
-
-# ---------- Build & deploy (shared image) ----------
+# ---------- Build & push (shared image) ----------
 
 docker-build-image:
 	docker build -t $(AZURE_CONTAINER_APP_IMAGE_NAME):$(VERSION) .
@@ -212,15 +197,44 @@ docker-push-image: require-acr-creds
 	echo "$(ACR_PASSWORD)" | docker login $(AZURE_CONTAINER_REGISTRY_LOGIN_SERVER) --username "$(ACR_USERNAME)" --password-stdin
 	docker push $(IMAGE_TAG)
 
-deploy: docker-build-image docker-push-image
-
 
 # ---------- Manual trigger & logs ----------
 
-trigger: require-env
+jobs-list:
+	az containerapp job list \
+	  --resource-group $(AZURE_ETL_RESOURCE_GROUP_NAME) \
+	  -o table
+
+job-name: require-env
+	@echo $(JOB_NAME)-$(ENV)
+
+job-show: require-env
+	az containerapp job show \
+	  --name $(JOB_NAME)-$(ENV) \
+	  --resource-group $(AZURE_ETL_RESOURCE_GROUP_NAME)
+
+job-trigger: require-env
+	az containerapp job show \
+	  --name $(JOB_NAME)-$(ENV) \
+	  --resource-group $(AZURE_ETL_RESOURCE_GROUP_NAME) \
+	  --query "properties.configuration.triggerType" -o tsv
+
+job-cron: require-env
+	az containerapp job show \
+	  --name $(JOB_NAME)-$(ENV) \
+	  --resource-group $(AZURE_ETL_RESOURCE_GROUP_NAME) \
+	  --query "properties.configuration.scheduleTriggerConfig.cronExpression" -o tsv
+
+trigger: require-env require-prod-approval
 	az containerapp job start \
 	  --name $(JOB_NAME)-$(ENV) \
 	  --resource-group $(AZURE_ETL_RESOURCE_GROUP_NAME)
+
+trigger-dev:
+	@$(MAKE) trigger ENV=dev
+
+trigger-prod:
+	@$(MAKE) trigger ENV=prod PROD_APPROVED=YES
 
 kill: require-env
 	@job_name="$(JOB_NAME)-$(ENV)"; \
