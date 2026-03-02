@@ -2,7 +2,44 @@
 
 This repository contains the code for ETL pipeline of the Kioskbot Project that crawls customer websites, extracts content, enriches it with keywords and questions via Azure OpenAI, and indexes it into Azure AI Search as a scheduled job inside an Azure container.
 
+
+## Architecture
+<details>
+<summary>Click to expand</summary>
+
+```mermaid
+flowchart TD
+  subgraph daily [Daily Cron - 2:00 AM UTC]
+    DevJob["Container Apps Job dev scheduled"]
+  end
+  DevJob -->|1| Secrets["Download .env.dev.app from Blob Storage"]
+  Secrets -->|2| Pipeline["Run pipeline for all customers"]
+  subgraph etlPipeline [Pipeline Stages]
+    Crawl["1 crawl customer.yml to url_list.jsonl"]
+    Extract["2 extract url_list.jsonl to content.jsonl"]
+    PostProcess["3 post_process content.jsonl to processed_data.xlsx"]
+    Index["4 index processed_data.xlsx to Azure AI Search"]
+    Crawl --> Extract --> PostProcess --> Index
+  end
+  Pipeline --> Crawl
+  Index -->|3| SmokeTest["Smoke test query dev AI Search"]
+  SmokeTest -->|4| Notify["Webhook notification Teams or Slack"]
+  Notify -.->|5 manual approval| Operator["Operator reviews dev"]
+  Operator -.->|"make trigger ENV=prod"| ProdJob["Container Apps Job prod manual"]
+  ProdJob --> ProdPipeline["Same flow secrets to pipeline to smoke test"]
+
+  subgraph shared [Shared Infrastructure]
+    ACR["ACR crkbglobal001 in rg-kb-global-001"]
+    BlobStorage["Blob Storage kioskbot-secrets"]
+  end
+  ACR -.->|image| DevJob
+  ACR -.->|image| ProdJob
+```
+</details>
+
 ## Project Structure
+<details>
+<summary>Click to expand</summary>
 
 ```
 src/etl_crawler/
@@ -33,6 +70,7 @@ tests/
 ```
 
 Each step exposes a `run(run_context: RunContext)` function that receives a shared context (customer name, data directory, YAML config, app settings) and returns a typed result. Steps are independently testable and can be run individually or as a full pipeline.
+</details>
 
 ## Prerequisite
 
@@ -120,6 +158,7 @@ The bootstrap script (`scripts/copy_secrets_from_container.py`) uses the connect
 </details>
 
 ## Running the Pipeline Locally
+
 <details>
 <summary>Full pipeline (all 4 steps)</summary>
 
@@ -231,37 +270,6 @@ The pipeline is deployed to Azure as two **Container Apps Jobs**:
 - Access to the existing ACR (`crkbglobal001` in `rg-kb-global-001`)
 
 Both jobs use the same container image. The `ENV` value (`dev` or `prod`) controls which app secrets file is loaded (`.env.dev.app` / `.env.prod.app`) and therefore which Azure Search/OpenAI endpoints are used.
-
-### Architecture
-
-```mermaid
-flowchart TD
-  subgraph daily [Daily Cron - 2:00 AM UTC]
-    DevJob["Container Apps Job dev scheduled"]
-  end
-  DevJob -->|1| Secrets["Download .env.dev.app from Blob Storage"]
-  Secrets -->|2| Pipeline["Run pipeline for all customers"]
-  subgraph etlPipeline [Pipeline Stages]
-    Crawl["1 crawl customer.yml to url_list.jsonl"]
-    Extract["2 extract url_list.jsonl to content.jsonl"]
-    PostProcess["3 post_process content.jsonl to processed_data.xlsx"]
-    Index["4 index processed_data.xlsx to Azure AI Search"]
-    Crawl --> Extract --> PostProcess --> Index
-  end
-  Pipeline --> Crawl
-  Index -->|3| SmokeTest["Smoke test query dev AI Search"]
-  SmokeTest -->|4| Notify["Webhook notification Teams or Slack"]
-  Notify -.->|5 manual approval| Operator["Operator reviews dev"]
-  Operator -.->|"make trigger ENV=prod"| ProdJob["Container Apps Job prod manual"]
-  ProdJob --> ProdPipeline["Same flow secrets to pipeline to smoke test"]
-
-  subgraph shared [Shared Infrastructure]
-    ACR["ACR crkbglobal001 in rg-kb-global-001"]
-    BlobStorage["Blob Storage kioskbot-secrets"]
-  end
-  ACR -.->|image| DevJob
-  ACR -.->|image| ProdJob
-```
 
 ### Configuration
 
