@@ -8,8 +8,8 @@ RUN apt-get update \
 
 RUN pip install uv==0.8.14
 
-COPY pyproject.toml uv.lock ./
-RUN uv sync --frozen --no-dev
+COPY pyproject.toml ./
+RUN uv sync --no-dev
 
 COPY src/ src/
 COPY scripts/ scripts/

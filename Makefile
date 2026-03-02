@@ -1,15 +1,16 @@
 PYTHON := $(firstword $(wildcard .venv/bin/python) $(wildcard .venv/Scripts/python.exe) python)
 VERSION=$(shell grep '^version' pyproject.toml | head -1 | cut -d '"' -f2)
-CUSTOMER_NAME_LIST := $(shell grep '^CUSTOMER_NAME_LIST=' .env.etl | cut -d '=' -f2-)
+CUSTOMER_NAME_LIST ?= $(shell [ -f .env.etl ] && grep '^CUSTOMER_NAME_LIST=' .env.etl | cut -d '=' -f2-)
 
 # ---------- Read Azure config from .env.etl ----------
-AZURE_ETL_RESOURCE_GROUP_NAME            := $(shell grep '^AZURE_ETL_RESOURCE_GROUP_NAME=' .env.etl | cut -d '=' -f2-)
-AZURE_CONTAINER_REGISTRY_NAME                := $(shell grep '^AZURE_CONTAINER_REGISTRY_NAME=' .env.etl | cut -d '=' -f2-)
-AZURE_CONTAINER_REGISTRY_LOGIN_SERVER        := $(shell grep '^AZURE_CONTAINER_REGISTRY_LOGIN_SERVER=' .env.etl | cut -d '=' -f2-)
-AZURE_RESOURCE_GROUP_LOCATION                := $(shell grep '^AZURE_RESOURCE_GROUP_LOCATION=' .env.etl | cut -d '=' -f2-)
-AZURE_CONTAINER_APP_ENV_NAME                := $(shell grep '^AZURE_CONTAINER_APP_ENV_NAME=' .env.etl | cut -d '=' -f2-)
-STORAGE_CONN_STR        := $(shell grep '^AZURE_STORAGE_ACCOUNT_PRIMARY_CONNECTION_STRING=' .env.etl | cut -d '=' -f2-)
-WEBHOOK_URL             := $(shell grep '^WEBHOOK_URL=' .env.etl | cut -d '=' -f2-)
+AZURE_ETL_RESOURCE_GROUP_NAME ?= $(shell [ -f .env.etl ] && grep '^AZURE_ETL_RESOURCE_GROUP_NAME=' .env.etl | cut -d '=' -f2-)
+AZURE_CONTAINER_REGISTRY_NAME ?= $(shell [ -f .env.etl ] && grep '^AZURE_CONTAINER_REGISTRY_NAME=' .env.etl | cut -d '=' -f2-)
+AZURE_CONTAINER_REGISTRY_LOGIN_SERVER ?= $(shell [ -f .env.etl ] && grep '^AZURE_CONTAINER_REGISTRY_LOGIN_SERVER=' .env.etl | cut -d '=' -f2-)
+AZURE_RESOURCE_GROUP_LOCATION ?= $(shell [ -f .env.etl ] && grep '^AZURE_RESOURCE_GROUP_LOCATION=' .env.etl | cut -d '=' -f2-)
+AZURE_CONTAINER_APP_ENV_NAME ?= $(shell [ -f .env.etl ] && grep '^AZURE_CONTAINER_APP_ENV_NAME=' .env.etl | cut -d '=' -f2-)
+AZURE_LOG_ANALYTICS_WORKSPACE_NAME ?= $(shell [ -f .env.etl ] && grep '^AZURE_LOG_ANALYTICS_WORKSPACE_NAME=' .env.etl | cut -d '=' -f2-)
+STORAGE_CONN_STR ?= $(shell [ -f .env.etl ] && grep '^AZURE_STORAGE_ACCOUNT_PRIMARY_CONNECTION_STRING=' .env.etl | cut -d '=' -f2-)
+WEBHOOK_URL ?= $(shell [ -f .env.etl ] && grep '^WEBHOOK_URL=' .env.etl | cut -d '=' -f2-)
 
 PROJECT_NAME            := $(shell grep '^name' pyproject.toml | head -1 | cut -d '"' -f2)
 AZURE_CONTAINER_APP_IMAGE_NAME               = $(PROJECT_NAME)
@@ -17,6 +18,9 @@ PROJECT_NAME_SAFE       := $(shell echo "$(PROJECT_NAME)" | tr '[:upper:]' '[:lo
 VERSION_SAFE            := $(shell echo "$(VERSION)" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9-]+/-/g; s/--+/-/g; s/^-+//; s/-+$$//')
 # Azure Container Apps job names must be <32 chars. Reserve room for "-prod" suffix.
 JOB_NAME                := $(shell echo "$(PROJECT_NAME_SAFE)-$(VERSION_SAFE)" | cut -c1-26 | sed -E 's/-+$$//')
+REPLICA_RETRY_LIMIT      = 1
+PARALLELISM              = 1
+REPLICA_COMPLETION_COUNT = 1
 IMAGE_TAG                = $(AZURE_CONTAINER_REGISTRY_LOGIN_SERVER)/$(AZURE_CONTAINER_APP_IMAGE_NAME):$(VERSION)
 
 lint:
@@ -100,52 +104,97 @@ notify:
 
 # ---------- Provision infrastructure ----------
 
+require-acr-creds:
+	@test -n "$(ACR_USERNAME)" || (echo "Error: ACR_USERNAME is required."; echo "Usage: make provision ACR_USERNAME='<acr-user>' ACR_PASSWORD='<acr-pass>'"; exit 1)
+	@test -n "$(ACR_PASSWORD)" || (echo "Error: ACR_PASSWORD is required."; echo "Usage: make provision ACR_USERNAME='<acr-user>' ACR_PASSWORD='<acr-pass>'"; exit 1)
+
+require-env:
+	@test -n "$(ENV)" || (echo "Error: ENV is required (dev or prod). Usage: make logs ENV=dev"; exit 1)
+	@test "$(ENV)" = "dev" -o "$(ENV)" = "prod" || (echo "Error: ENV must be 'dev' or 'prod'."; exit 1)
+
+require-image-in-acr:
+	@tag_exists=$$(az acr repository show-tags \
+	  --name $(AZURE_CONTAINER_REGISTRY_NAME) \
+	  --repository $(AZURE_CONTAINER_APP_IMAGE_NAME) \
+	  --query "[?@=='$(VERSION)'] | length(@)" -o tsv); \
+	test "$$tag_exists" != "0" || (echo "Error: image tag $(VERSION) not found in ACR."; echo "Run: make docker-build-image && make docker-push-image ACR_USERNAME='...' ACR_PASSWORD='...'"; exit 1)
+
 provision-rg:
 	az group create \
 	  --name $(AZURE_ETL_RESOURCE_GROUP_NAME) \
 	  --location $(AZURE_RESOURCE_GROUP_LOCATION)
 
 provision-infra:
+	az monitor log-analytics workspace create \
+	  --resource-group $(AZURE_ETL_RESOURCE_GROUP_NAME) \
+	  --workspace-name $(AZURE_LOG_ANALYTICS_WORKSPACE_NAME) \
+	  --location $(AZURE_RESOURCE_GROUP_LOCATION)
 	az containerapp env create \
 	  --name $(AZURE_CONTAINER_APP_ENV_NAME) \
 	  --resource-group $(AZURE_ETL_RESOURCE_GROUP_NAME) \
-	  --location $(AZURE_RESOURCE_GROUP_LOCATION)
+	  --location $(AZURE_RESOURCE_GROUP_LOCATION) \
+	  --logs-workspace-id "$$(az monitor log-analytics workspace show --resource-group $(AZURE_ETL_RESOURCE_GROUP_NAME) --workspace-name $(AZURE_LOG_ANALYTICS_WORKSPACE_NAME) --query customerId -o tsv)" \
+	  --logs-workspace-key "$$(az monitor log-analytics workspace get-shared-keys --resource-group $(AZURE_ETL_RESOURCE_GROUP_NAME) --workspace-name $(AZURE_LOG_ANALYTICS_WORKSPACE_NAME) --query primarySharedKey -o tsv)"
 
-provision-dev:
+provision-dev: require-acr-creds require-image-in-acr
 	az containerapp job create \
 	  --name $(JOB_NAME)-dev \
 	  --resource-group $(AZURE_ETL_RESOURCE_GROUP_NAME) \
 	  --environment $(AZURE_CONTAINER_APP_ENV_NAME) \
 	  --image $(IMAGE_TAG) \
 	  --registry-server $(AZURE_CONTAINER_REGISTRY_LOGIN_SERVER) \
+	  --registry-username "$(ACR_USERNAME)" \
+	  --registry-password "$(ACR_PASSWORD)" \
 	  --trigger-type Schedule \
 	  --cron-expression "0 2 * * *" \
+	  --parallelism $(PARALLELISM) \
+	  --replica-completion-count $(REPLICA_COMPLETION_COUNT) \
 	  --replica-timeout 28800 \
-	  --cpu 1 --memory 4Gi \
+	  --replica-retry-limit $(REPLICA_RETRY_LIMIT) \
+	  --cpu 2 --memory 4Gi \
 	  --env-vars \
 	    ENV=dev \
 	    AZURE_STORAGE_ACCOUNT_PRIMARY_CONNECTION_STRING=secretref:storage-conn-str \
 	    AZURE_CONTAINER_STORAGE_NAME=kioskbot-logs \
 	    AZURE_CONTAINER_STORAGE_SECRETS_NAME=kioskbot-secrets \
+	    AZURE_ETL_RESOURCE_GROUP_NAME="$(AZURE_ETL_RESOURCE_GROUP_NAME)" \
+	    AZURE_CONTAINER_REGISTRY_NAME="$(AZURE_CONTAINER_REGISTRY_NAME)" \
+	    AZURE_CONTAINER_REGISTRY_LOGIN_SERVER="$(AZURE_CONTAINER_REGISTRY_LOGIN_SERVER)" \
+	    AZURE_RESOURCE_GROUP_LOCATION="$(AZURE_RESOURCE_GROUP_LOCATION)" \
+	    AZURE_CONTAINER_APP_ENV_NAME="$(AZURE_CONTAINER_APP_ENV_NAME)" \
+	    AZURE_LOG_ANALYTICS_WORKSPACE_NAME="$(AZURE_LOG_ANALYTICS_WORKSPACE_NAME)" \
+	    WEBHOOK_URL="$(WEBHOOK_URL)" \
 	    CUSTOMER_NAME_LIST="$(CUSTOMER_NAME_LIST)" \
 	  --secrets \
 	    storage-conn-str="$(STORAGE_CONN_STR)"
 
-provision-prod:
+provision-prod: require-acr-creds require-image-in-acr
 	az containerapp job create \
 	  --name $(JOB_NAME)-prod \
 	  --resource-group $(AZURE_ETL_RESOURCE_GROUP_NAME) \
 	  --environment $(AZURE_CONTAINER_APP_ENV_NAME) \
 	  --image $(IMAGE_TAG) \
 	  --registry-server $(AZURE_CONTAINER_REGISTRY_LOGIN_SERVER) \
+	  --registry-username "$(ACR_USERNAME)" \
+	  --registry-password "$(ACR_PASSWORD)" \
 	  --trigger-type Manual \
+	  --parallelism $(PARALLELISM) \
+	  --replica-completion-count $(REPLICA_COMPLETION_COUNT) \
 	  --replica-timeout 28800 \
-	  --cpu 1 --memory 4Gi \
+	  --replica-retry-limit $(REPLICA_RETRY_LIMIT) \
+	  --cpu 2 --memory 4Gi \
 	  --env-vars \
 	    ENV=prod \
 	    AZURE_STORAGE_ACCOUNT_PRIMARY_CONNECTION_STRING=secretref:storage-conn-str \
 	    AZURE_CONTAINER_STORAGE_NAME=kioskbot-logs \
 	    AZURE_CONTAINER_STORAGE_SECRETS_NAME=kioskbot-secrets \
+	    AZURE_ETL_RESOURCE_GROUP_NAME="$(AZURE_ETL_RESOURCE_GROUP_NAME)" \
+	    AZURE_CONTAINER_REGISTRY_NAME="$(AZURE_CONTAINER_REGISTRY_NAME)" \
+	    AZURE_CONTAINER_REGISTRY_LOGIN_SERVER="$(AZURE_CONTAINER_REGISTRY_LOGIN_SERVER)" \
+	    AZURE_RESOURCE_GROUP_LOCATION="$(AZURE_RESOURCE_GROUP_LOCATION)" \
+	    AZURE_CONTAINER_APP_ENV_NAME="$(AZURE_CONTAINER_APP_ENV_NAME)" \
+	    AZURE_LOG_ANALYTICS_WORKSPACE_NAME="$(AZURE_LOG_ANALYTICS_WORKSPACE_NAME)" \
+	    WEBHOOK_URL="$(WEBHOOK_URL)" \
 	    CUSTOMER_NAME_LIST="$(CUSTOMER_NAME_LIST)" \
 	  --secrets \
 	    storage-conn-str="$(STORAGE_CONN_STR)"
@@ -155,18 +204,25 @@ provision: provision-rg provision-infra provision-dev provision-prod
 
 # ---------- Build & deploy (shared image) ----------
 
-deploy:
-	az acr build --registry $(AZURE_CONTAINER_REGISTRY_NAME) --image $(AZURE_CONTAINER_APP_IMAGE_NAME):$(VERSION) .
+docker-build-image:
+	docker build -t $(AZURE_CONTAINER_APP_IMAGE_NAME):$(VERSION) .
+
+docker-push-image: require-acr-creds
+	docker tag $(AZURE_CONTAINER_APP_IMAGE_NAME):$(VERSION) $(IMAGE_TAG)
+	echo "$(ACR_PASSWORD)" | docker login $(AZURE_CONTAINER_REGISTRY_LOGIN_SERVER) --username "$(ACR_USERNAME)" --password-stdin
+	docker push $(IMAGE_TAG)
+
+deploy: docker-build-image docker-push-image
 
 
 # ---------- Manual trigger & logs ----------
 
-trigger:
+trigger: require-env
 	az containerapp job start \
 	  --name $(JOB_NAME)-$(ENV) \
 	  --resource-group $(AZURE_ETL_RESOURCE_GROUP_NAME)
 
-kill:
+kill: require-env
 	@job_name="$(JOB_NAME)-$(ENV)"; \
 	executions=$$(az containerapp job execution list \
 	  --name $$job_name \
@@ -184,7 +240,31 @@ kill:
 	  done; \
 	fi
 
-logs:
+logs: require-env
 	az containerapp job logs show \
 	  --name $(JOB_NAME)-$(ENV) \
+	  --container $(JOB_NAME)-$(ENV) \
 	  --resource-group $(AZURE_ETL_RESOURCE_GROUP_NAME) --follow
+
+
+# ---------- Destroy provisioned resources ----------
+
+require-destroy-confirm:
+	@test "$(DESTROY_CONFIRM)" = "YES" || (echo "Refusing to destroy resources. Re-run with DESTROY_CONFIRM=YES"; exit 1)
+
+destroy-job: require-destroy-confirm require-env
+	az containerapp job delete \
+	  --name $(JOB_NAME)-$(ENV) \
+	  --resource-group $(AZURE_ETL_RESOURCE_GROUP_NAME) \
+	  --yes
+
+destroy-infra: require-destroy-confirm
+	-az containerapp env delete \
+	  --name $(AZURE_CONTAINER_APP_ENV_NAME) \
+	  --resource-group $(AZURE_ETL_RESOURCE_GROUP_NAME) \
+	  --yes
+	-az monitor log-analytics workspace delete \
+	  --resource-group $(AZURE_ETL_RESOURCE_GROUP_NAME) \
+	  --workspace-name $(AZURE_LOG_ANALYTICS_WORKSPACE_NAME) \
+	  --yes
+
