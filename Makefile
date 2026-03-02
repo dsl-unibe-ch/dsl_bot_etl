@@ -13,7 +13,10 @@ WEBHOOK_URL             := $(shell grep '^WEBHOOK_URL=' .env.etl | cut -d '=' -f
 
 PROJECT_NAME            := $(shell grep '^name' pyproject.toml | head -1 | cut -d '"' -f2)
 AZURE_CONTAINER_APP_IMAGE_NAME               = $(PROJECT_NAME)
-JOB_NAME                 = $(PROJECT_NAME)-$(VERSION)
+PROJECT_NAME_SAFE       := $(shell echo "$(PROJECT_NAME)" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9-]+/-/g; s/--+/-/g; s/^-+//; s/-+$$//')
+VERSION_SAFE            := $(shell echo "$(VERSION)" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9-]+/-/g; s/--+/-/g; s/^-+//; s/-+$$//')
+# Azure Container Apps job names must be <32 chars. Reserve room for "-prod" suffix.
+JOB_NAME                := $(shell echo "$(PROJECT_NAME_SAFE)-$(VERSION_SAFE)" | cut -c1-26 | sed -E 's/-+$$//')
 IMAGE_TAG                = $(AZURE_CONTAINER_REGISTRY_LOGIN_SERVER)/$(AZURE_CONTAINER_APP_IMAGE_NAME):$(VERSION)
 
 lint:
@@ -97,6 +100,11 @@ notify:
 
 # ---------- Provision infrastructure ----------
 
+provision-rg:
+	az group create \
+	  --name $(AZURE_ETL_RESOURCE_GROUP_NAME) \
+	  --location $(AZURE_RESOURCE_GROUP_LOCATION)
+
 provision-infra:
 	az containerapp env create \
 	  --name $(AZURE_CONTAINER_APP_ENV_NAME) \
@@ -142,7 +150,7 @@ provision-prod:
 	  --secrets \
 	    storage-conn-str="$(STORAGE_CONN_STR)"
 
-provision: provision-infra provision-dev provision-prod
+provision: provision-rg provision-infra provision-dev provision-prod
 
 
 # ---------- Build & deploy (shared image) ----------

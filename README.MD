@@ -1,10 +1,8 @@
 # Kioskbot ETL
 
-ETL pipeline that crawls customer websites, extracts content, enriches it with keywords and questions via Azure OpenAI, and indexes it into Azure AI Search.
+This repository contains the code for ETL pipeline of the Kioskbot Project that crawls customer websites, extracts content, enriches it with keywords and questions via Azure OpenAI, and indexes it into Azure AI Search as a scheduled job inside an Azure container.
 
-The ETL pipeline runs as scheduled jobs (one for `dev` and one for `prod`) inside a Azure container job
-
-## Architecture
+## Project Structure
 
 ```
 src/etl_crawler/
@@ -23,25 +21,15 @@ src/etl_crawler/
 │   └── innovation.yml
 scripts/
 └── copy_secrets_from_container.py   # Download .env files from Azure Blob Storage
+└── smoke_test.py   # Validate AI Search indexes are healthy.
 tests/
 ├── test_crawl.py
 ├── test_extract.py
 ├── test_post_process.py
+├── test_index.py
 ├── test_pipeline.py
 └── benchmarks/
     └── test_index_quality.py        # Future: RAG quality benchmarks
-```
-
-### Pipeline data flow
-
-```
-customer.yml ─→ [1. crawl] ─→ url_list.jsonl
-                                  │
-                              [2. extract] ─→ {customer}_content.jsonl
-                                                    │
-              .env.{ENV}.app ─→ [3. post_process] ─→ processed_data.xlsx
-                                                          │
-              .env.{ENV}.app ─→ [4. index] ─→ Azure AI Search Index
 ```
 
 Each step exposes a `run(run_context: RunContext)` function that receives a shared context (customer name, data directory, YAML config, app settings) and returns a typed result. Steps are independently testable and can be run individually or as a full pipeline.
@@ -218,67 +206,137 @@ make lint
 
 ## Provisioning and Deployment
 
-The pipeline is deployed to Azure as two **Container Apps Jobs** — one for dev (daily cron) and one for prod (manual trigger after approval). Both use the same Docker image; the `ENV` variable controls which Azure services are targeted.
+The pipeline is deployed to Azure as two **Container Apps Jobs**:
 
-### Prerequisites
+- **dev job**: scheduled daily via cron
+- **prod job**: manual trigger after dev validation
 
 - Azure CLI installed and logged in (`az login`)
 - `.env.etl` fully populated (see [Configure the Environment Variables](#configure-the-environment-variables))
 - Access to the existing ACR (`crkbglobal001` in `rg-kb-global-001`)
 
-### One-time infrastructure setup
+Both jobs use the same container image. The `ENV` value (`dev` or `prod`) controls which app secrets file is loaded (`.env.dev.app` / `.env.prod.app`) and therefore which Azure Search/OpenAI endpoints are used.
 
-Provision the Container Apps Environment and both jobs:
+### Architecture
+
+```mermaid
+flowchart TD
+  subgraph daily [Daily Cron - 2:00 AM UTC]
+    DevJob["Container Apps Job\n(dev, scheduled)"]
+  end
+  DevJob -->|1| Secrets["Download .env.dev.app\nfrom Blob Storage"]
+  Secrets -->|2| Pipeline["Run pipeline\n(all customers)"]
+  subgraph etlPipeline [Pipeline Stages]
+    Crawl["1. crawl\n(customer.yml -> url_list.jsonl)"]
+    Extract["2. extract\n(url_list.jsonl -> content.jsonl)"]
+    PostProcess["3. post_process\n(content.jsonl -> processed_data.xlsx)"]
+    Index["4. index\n(processed_data.xlsx -> Azure AI Search)"]
+    Crawl --> Extract --> PostProcess --> Index
+  end
+  Pipeline --> Crawl
+  Pipeline -->|3| SmokeTest["Smoke test\n(query dev AI Search)"]
+  SmokeTest -->|4| Notify["Webhook notification\n(Teams / Slack)"]
+  Notify -.->|5 manual approval| Operator["Operator reviews dev"]
+  Operator -.->|"make trigger ENV=prod"| ProdJob["Container Apps Job\n(prod, manual)"]
+  ProdJob --> ProdPipeline["Same flow:\nsecrets -> pipeline -> smoke test"]
+
+  subgraph shared [Shared Infrastructure]
+    ACR["ACR: crkbglobal001\n(rg-kb-global-001)"]
+    BlobStorage["Blob Storage\n(kioskbot-secrets)"]
+  end
+  ACR -.->|image| DevJob
+  ACR -.->|image| ProdJob
+```
+
+### Configuration
+
+All Azure references are read from `.env.etl` in `Makefile` using:
+
+```make
+$(shell grep '^VAR=' .env.etl | cut -d '=' -f2-)
+```
+
+Required `.env.etl` keys:
+
+- `AZURE_STORAGE_ACCOUNT_PRIMARY_CONNECTION_STRING`
+- `AZURE_CONTAINER_STORAGE_NAME`
+- `AZURE_CONTAINER_STORAGE_SECRETS_NAME`
+- `CUSTOMER_NAME_LIST`
+- `AZURE_ETL_RESOURCE_GROUP_NAME`
+- `AZURE_CONTAINER_REGISTRY_NAME`
+- `AZURE_CONTAINER_REGISTRY_LOGIN_SERVER`
+- `AZURE_RESOURCE_GROUP_LOCATION`
+- `AZURE_CONTAINER_APP_ENV_NAME`
+- `WEBHOOK_URL` (optional)
+
+Image and job naming are derived from `pyproject.toml`:
+
+- `PROJECT_NAME` = `name` (e.g. `kioskbot-etl`)
+- `VERSION` = `version` (e.g. `0.1.0`)
+- Job names = sanitized and truncated `{PROJECT_NAME}-{VERSION}-dev|prod` (e.g. `kioskbot-etl-0-1-0-dev`)
+- Image tag = `{ACR_LOGIN_SERVER}/{PROJECT_NAME}:{VERSION}` (e.g. `crkbglobal001.azurecr.io/kioskbot-etl:0.1.0`)
+
+### Daily flow
+
+1. **02:00 UTC** — dev job starts automatically (`Schedule`)
+2. Container runs `make run-scheduled`, chaining:
+   - `copy-secrets-from-container`
+   - `pipeline-all-customers`
+   - `smoke-test`
+   - `notify`
+3. Smoke tests validate dev indexes (`kb-quality`, `kb-innovation`)
+4. Webhook sends a status message to Teams/Slack
+5. Operator reviews dev output
+6. Operator triggers prod manually:
+
+```bash
+make trigger ENV=prod
+```
+
+7. Prod job runs the same pipeline against prod services
+
+### Key settings
+
+- Dev job trigger: `--trigger-type Schedule --cron-expression "0 2 * * *"`
+- Prod job trigger: `--trigger-type Manual`
+- Job naming rule: lowercase alphanumeric + `-`, with version dots converted to dashes and base name trimmed to fit Azure's `<32` character limit after `-dev`/`-prod`
+- Timeout: `--replica-timeout 28800` (8 hours)
+- Resources: `--cpu 1 --memory 4Gi`
+- ACR: existing registry (`crkbglobal001`), no ACR provisioning target
+- Secrets strategy: only Storage connection string is injected into the job; app secrets are pulled from Blob at runtime
+
+### Provision and operate
+
+One-time setup:
 
 ```bash
 make provision
 ```
 
-This runs three sub-targets in order:
+`make provision` now performs:
 
-- `make provision-infra` — creates the Container Apps Environment
-- `make provision-dev` — creates the dev job with a daily cron schedule (`0 2 * * *`)
-- `make provision-prod` — creates the prod job with manual trigger only
+- `provision-rg` (creates the ETL resource group if missing)
+- `provision-infra` (creates the Container Apps environment)
+- `provision-dev` (creates scheduled dev job)
+- `provision-prod` (creates manual prod job)
 
-Job names are derived from `pyproject.toml` (e.g. `kioskbot-etl-0.1.0-dev`, `kioskbot-etl-0.1.0-prod`).
-
-### Build and deploy the image
-
-Build the Docker image in Azure and push it to ACR:
+Build/push latest image:
 
 ```bash
 make deploy
 ```
 
-The image is tagged as `{ACR_LOGIN_SERVER}/{PROJECT_NAME}:{VERSION}` (e.g. `crkbglobal001.azurecr.io/kioskbot-etl:0.1.0`). Run this after every code change that should be picked up by the scheduled jobs.
-
-### Daily workflow
-
-1. **02:00 UTC** — the dev job starts automatically
-2. The container runs `make run-scheduled`, which chains:
-   - `copy-secrets-from-container` — downloads `.env.dev.app` from Blob Storage
-   - `pipeline-all-customers` — runs the full pipeline for every customer
-   - `smoke-test` — validates each AI Search index has documents and returns search results
-   - `notify` — sends a webhook notification to Teams/Slack
-3. **Review** the dev results (chatbot, logs, notification)
-4. **Trigger prod** when satisfied:
-
-    ```bash
-    make trigger ENV=prod
-    ```
-
-5. The prod job runs the same flow against prod Azure services
-
 ### Useful commands
 
 | Command | Description |
 |---|---|
-| `make provision` | One-time: create Container Apps Environment + dev/prod jobs |
+| `make provision` | One-time: create Container Apps environment + dev/prod jobs |
+| `make provision-rg` | Create ETL resource group (idempotent) |
 | `make deploy` | Build and push Docker image to ACR |
-| `make trigger ENV=dev` | Manually start the dev job (outside cron schedule) |
-| `make trigger ENV=prod` | Manually start the prod job (after reviewing dev) |
-| `make kill ENV=dev` | Stop all currently running dev job executions |
-| `make kill ENV=prod` | Stop all currently running prod job executions |
-| `make logs ENV=dev` | Tail the dev job logs |
-| `make logs ENV=prod` | Tail the prod job logs |
+| `make trigger ENV=dev` | Manually start the dev job |
+| `make trigger ENV=prod` | Manually start the prod job |
+| `make kill ENV=dev` | Stop all currently running dev executions |
+| `make kill ENV=prod` | Stop all currently running prod executions |
+| `make logs ENV=dev` | Tail dev job logs |
+| `make logs ENV=prod` | Tail prod job logs |
 | `make smoke-test ENV=dev` | Run smoke tests locally against dev indexes |
