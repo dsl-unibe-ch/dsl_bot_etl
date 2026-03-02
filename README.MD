@@ -120,11 +120,8 @@ The bootstrap script (`scripts/copy_secrets_from_container.py`) uses the connect
 </details>
 
 ## Running the Pipeline Locally
-
 <details>
-<summary>Click to expand</summary>
-
-### Full pipeline (all 4 steps)
+<summary>Full pipeline (all 4 steps)</summary>
 
 ```bash
 make pipeline customer_name=quality ENV=dev
@@ -173,7 +170,9 @@ make etl customer_name=quality ENV=dev
 
 </details>
 
-### Using the Python CLI directly
+
+<details>
+<summary>Using the Python CLI directly</summary>
 
 ```bash
 PYTHONPATH=. python -m src.etl_crawler run --customer quality
@@ -189,9 +188,14 @@ PYTHONPATH=. python -m src.etl_crawler run --customer quality --data-dir data/qu
 - Index naming convention: `kb-{customer_name}` (e.g. `kb-quality`, `kb-innovation`)
 - The pipeline does not handle scanned PDFs without a text layer
 
+</details>
+
 ## Running Tests
 
-All tests:
+<details>
+<summary>Click to expand </summary>
+
+### All tests:
 
 ```bash
 make test
@@ -202,12 +206,18 @@ Skip benchmark tests (faster, no Azure required):
 ```bash
 make test-quick
 ```
+</details>
 
 ## Linting
+
+<details>
+<summary>Click to expand </summary>
 
 ```bash
 make lint
 ```
+
+</details>
 
 ## Provisioning and Deployment
 
