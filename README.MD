@@ -121,13 +121,16 @@ The bootstrap script (`scripts/copy_secrets_from_container.py`) uses the connect
 
 ## Running the Pipeline Locally
 
+<details>
+<summary>Click to expand</summary>
+
 ### Full pipeline (all 4 steps)
 
 ```bash
 make pipeline customer_name=quality ENV=dev
 ```
 
-This runs: crawl -> extract -> post_process -> index for each customer.
+This runs: crawl -> extract -> post_process -> index for a given customer.
 
 To run the full pipeline for all customers, use
 
@@ -167,6 +170,8 @@ Reads `processed_data.xlsx`, chunks documents with `SemanticChunker`, generates 
 ```bash
 make etl customer_name=quality ENV=dev
 ```
+
+</details>
 
 ### Using the Python CLI directly
 
@@ -222,27 +227,27 @@ Both jobs use the same container image. The `ENV` value (`dev` or `prod`) contro
 ```mermaid
 flowchart TD
   subgraph daily [Daily Cron - 2:00 AM UTC]
-    DevJob["Container Apps Job\n(dev, scheduled)"]
+    DevJob["Container Apps Job dev scheduled"]
   end
-  DevJob -->|1| Secrets["Download .env.dev.app\nfrom Blob Storage"]
-  Secrets -->|2| Pipeline["Run pipeline\n(all customers)"]
+  DevJob -->|1| Secrets["Download .env.dev.app from Blob Storage"]
+  Secrets -->|2| Pipeline["Run pipeline for all customers"]
   subgraph etlPipeline [Pipeline Stages]
-    Crawl["1. crawl\n(customer.yml -> url_list.jsonl)"]
-    Extract["2. extract\n(url_list.jsonl -> content.jsonl)"]
-    PostProcess["3. post_process\n(content.jsonl -> processed_data.xlsx)"]
-    Index["4. index\n(processed_data.xlsx -> Azure AI Search)"]
+    Crawl["1 crawl customer.yml to url_list.jsonl"]
+    Extract["2 extract url_list.jsonl to content.jsonl"]
+    PostProcess["3 post_process content.jsonl to processed_data.xlsx"]
+    Index["4 index processed_data.xlsx to Azure AI Search"]
     Crawl --> Extract --> PostProcess --> Index
   end
   Pipeline --> Crawl
-  Pipeline -->|3| SmokeTest["Smoke test\n(query dev AI Search)"]
-  SmokeTest -->|4| Notify["Webhook notification\n(Teams / Slack)"]
+  Index -->|3| SmokeTest["Smoke test query dev AI Search"]
+  SmokeTest -->|4| Notify["Webhook notification Teams or Slack"]
   Notify -.->|5 manual approval| Operator["Operator reviews dev"]
-  Operator -.->|"make trigger ENV=prod"| ProdJob["Container Apps Job\n(prod, manual)"]
-  ProdJob --> ProdPipeline["Same flow:\nsecrets -> pipeline -> smoke test"]
+  Operator -.->|"make trigger ENV=prod"| ProdJob["Container Apps Job prod manual"]
+  ProdJob --> ProdPipeline["Same flow secrets to pipeline to smoke test"]
 
   subgraph shared [Shared Infrastructure]
-    ACR["ACR: crkbglobal001\n(rg-kb-global-001)"]
-    BlobStorage["Blob Storage\n(kioskbot-secrets)"]
+    ACR["ACR crkbglobal001 in rg-kb-global-001"]
+    BlobStorage["Blob Storage kioskbot-secrets"]
   end
   ACR -.->|image| DevJob
   ACR -.->|image| ProdJob
@@ -267,6 +272,7 @@ Required `.env.etl` keys:
 - `AZURE_CONTAINER_REGISTRY_LOGIN_SERVER`
 - `AZURE_RESOURCE_GROUP_LOCATION`
 - `AZURE_CONTAINER_APP_ENV_NAME`
+- `AZURE_LOG_ANALYTICS_WORKSPACE_NAME`
 - `WEBHOOK_URL` (optional)
 
 Image and job naming are derived from `pyproject.toml`:
@@ -300,17 +306,28 @@ make trigger ENV=prod
 - Dev job trigger: `--trigger-type Schedule --cron-expression "0 2 * * *"`
 - Prod job trigger: `--trigger-type Manual`
 - Job naming rule: lowercase alphanumeric + `-`, with version dots converted to dashes and base name trimmed to fit Azure's `<32` character limit after `-dev`/`-prod`
+- Parallelism: `--parallelism 1`
+- Replica completion count: `--replica-completion-count 1`
 - Timeout: `--replica-timeout 28800` (8 hours)
-- Resources: `--cpu 1 --memory 4Gi`
+- Retry: `--replica-retry-limit 1` (required by current Azure CLI for job creation)
+- Resources: `--cpu 2 --memory 4Gi` (valid Consumption pairing)
 - ACR: existing registry (`crkbglobal001`), no ACR provisioning target
-- Secrets strategy: only Storage connection string is injected into the job; app secrets are pulled from Blob at runtime
+- Secrets strategy: Storage connection string is read from `.env.etl`; ACR credentials are passed at runtime as `ACR_USERNAME` and `ACR_PASSWORD` when creating jobs
+- Logging workspace: `provision-infra` creates/uses a fixed Log Analytics workspace name from `.env.etl` (`AZURE_LOG_ANALYTICS_WORKSPACE_NAME`) instead of auto-generated names
 
 ### Provision and operate
 
-One-time setup:
+Build/push image first:
 
 ```bash
-make provision
+make docker-build-image
+make docker-push-image ACR_USERNAME="<acr-user>" ACR_PASSWORD="<acr-password>"
+```
+
+One-time infrastructure setup:
+
+```bash
+make provision ACR_USERNAME="<acr-user>" ACR_PASSWORD="<acr-password>"
 ```
 
 `make provision` now performs:
@@ -320,7 +337,9 @@ make provision
 - `provision-dev` (creates scheduled dev job)
 - `provision-prod` (creates manual prod job)
 
-Build/push latest image:
+`provision-dev` and `provision-prod` validate that the image tag exists in ACR before creating jobs.
+
+Build/push latest image (shortcut):
 
 ```bash
 make deploy
@@ -330,13 +349,20 @@ make deploy
 
 | Command | Description |
 |---|---|
-| `make provision` | One-time: create Container Apps environment + dev/prod jobs |
+| `make docker-build-image` | Build local Docker image (`kioskbot-etl:{VERSION}`) |
+| `make docker-push-image ACR_USERNAME="..." ACR_PASSWORD="..."` | Tag and push image to ACR |
+| `make provision ACR_USERNAME="..." ACR_PASSWORD="..."` | One-time: create Container Apps environment + dev/prod jobs |
 | `make provision-rg` | Create ETL resource group (idempotent) |
-| `make deploy` | Build and push Docker image to ACR |
+| `make provision-dev ACR_USERNAME="..." ACR_PASSWORD="..."` | Create/update dev job (requires ACR credentials) |
+| `make provision-prod ACR_USERNAME="..." ACR_PASSWORD="..."` | Create/update prod job (requires ACR credentials) |
+| `make deploy` | Shortcut for `docker-build-image` + `docker-push-image` |
 | `make trigger ENV=dev` | Manually start the dev job |
 | `make trigger ENV=prod` | Manually start the prod job |
 | `make kill ENV=dev` | Stop all currently running dev executions |
 | `make kill ENV=prod` | Stop all currently running prod executions |
-| `make logs ENV=dev` | Tail dev job logs |
-| `make logs ENV=prod` | Tail prod job logs |
+| `make logs ENV=dev` | Tail dev job logs (requires `ENV=dev|prod`) |
+| `make logs ENV=prod` | Tail prod job logs (requires `ENV=dev|prod`) |
 | `make smoke-test ENV=dev` | Run smoke tests locally against dev indexes |
+| `make destroy-job ENV=dev DESTROY_CONFIRM=YES` | Delete only dev Container Apps job |
+| `make destroy-job ENV=prod DESTROY_CONFIRM=YES` | Delete only prod Container Apps job |
+| `make destroy-infra DESTROY_CONFIRM=YES` | Delete Container Apps environment + configured Log Analytics workspace |
