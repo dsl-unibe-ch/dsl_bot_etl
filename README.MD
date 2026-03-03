@@ -331,6 +331,11 @@ make docker-push-image ACR_USERNAME="<acr-user>" ACR_PASSWORD="<acr-password>"
   make provision-infra
   ```
 
+### Testing Steps
+
+To be implemented
+
+
 ### Create/ Update Crawl Jobs
 
 1. Before updating any job, first build and push the latest image from the [Deploy Container](#deploy-container) section.
