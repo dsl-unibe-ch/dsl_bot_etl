@@ -5,7 +5,6 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-
 import yaml
 
 from src.etl_crawler.config import AppSettings

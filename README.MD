@@ -366,10 +366,25 @@ To be implemented
   make trigger ENV=dev
   make logs ENV=dev
 7. Review the smoke test results. If approved, go to step 8. Otherwise, fix bug and repeat steps from 1-6.
-8. Trugger `prod`
+8. Trigger `prod`
   make trigger ENV=prod PROD_APPROVED=YES
   make logs ENV=prod
   ```
+9. To view logs after the end of the job, KQL queries can be run on `Azure portal/<YOUR_CONTAINER_APP_JOB>/Logs` [Optional]
+  1. Example query to get container level logs
+    ```bash
+    ContainerAppSystemLogs_CL
+  | where JobName_s == 'kioskbot-etl-0-1-1-dev'
+    ```
+  2. Example query to get app level ephemeral logs
+    ```bash
+    ContainerAppConsoleLogs_CL
+  | where TimeGenerated between (datetime(2026-03-04T02:00:00Z) .. datetime(2026-03-04T06:50:00Z))
+  | where ContainerGroupName_s has "kioskbot-etl-0-1-1-dev"
+  | project TimeGenerated, Log_s
+  | order by TimeGenerated desc
+    ```
+
 
 **Note:** Both `provision-dev` and `provision-prod` validate that the image tag exists in ACR before creating jobs.
 
