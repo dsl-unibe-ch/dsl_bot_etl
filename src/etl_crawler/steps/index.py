@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -44,6 +45,17 @@ logger = logging.getLogger(__name__)
 
 HTTP_STATUS_BAD_REQUEST = 400
 HTTP_STATUS_NOT_FOUND = 404
+HTTP_STATUS_REQUEST_TIMEOUT = 408
+HTTP_STATUS_TOO_MANY_REQUESTS = 429
+HTTP_STATUS_INTERNAL_SERVER_ERROR = 500
+HTTP_STATUS_BAD_GATEWAY = 502
+HTTP_STATUS_SERVICE_UNAVAILABLE = 503
+HTTP_STATUS_GATEWAY_TIMEOUT = 504
+
+INDEX_CREATE_MAX_ATTEMPTS = 4
+INDEX_CREATE_RETRY_SECONDS = 5
+INDEX_COUNT_CHECK_ATTEMPTS = 8
+INDEX_COUNT_CHECK_SLEEP_SECONDS = 5
 
 
 
@@ -237,6 +249,77 @@ def _generate_change_summary(
     return summary
 
 
+def _is_transient_http_error(exc: HttpResponseError) -> bool:
+    """Return True if error is likely transient and retryable."""
+    return exc.status_code in {
+        HTTP_STATUS_REQUEST_TIMEOUT,
+        HTTP_STATUS_TOO_MANY_REQUESTS,
+        HTTP_STATUS_INTERNAL_SERVER_ERROR,
+        HTTP_STATUS_BAD_GATEWAY,
+        HTTP_STATUS_SERVICE_UNAVAILABLE,
+        HTTP_STATUS_GATEWAY_TIMEOUT,
+    }
+
+
+def _create_index_with_retry(
+    index_client: SearchIndexClient, index_schema: SearchIndex, index_name: str
+) -> None:
+    """Create index with retry for transient Azure Search errors."""
+    for attempt in range(1, INDEX_CREATE_MAX_ATTEMPTS + 1):
+        try:
+            index_client.create_index(index_schema)
+            logger.info("Index '%s' created.", index_name)
+            return
+        except HttpResponseError as exc:
+            is_last_attempt = attempt == INDEX_CREATE_MAX_ATTEMPTS
+            if _is_transient_http_error(exc) and not is_last_attempt:
+                logger.warning(
+                    "Transient error creating index '%s' (attempt %d/%d): %s. Retrying in %ds...",
+                    index_name,
+                    attempt,
+                    INDEX_CREATE_MAX_ATTEMPTS,
+                    exc,
+                    INDEX_CREATE_RETRY_SECONDS,
+                )
+                time.sleep(INDEX_CREATE_RETRY_SECONDS)
+                continue
+            logger.exception(
+                "Failed to create index '%s' after %d attempt(s).",
+                index_name,
+                attempt,
+            )
+            raise
+
+
+def _assert_index_not_empty(index_client: SearchIndexClient, index_name: str) -> None:
+    """Poll index statistics and fail fast if index remains empty."""
+    doc_count = 0
+    for attempt in range(1, INDEX_COUNT_CHECK_ATTEMPTS + 1):
+        stats = index_client.get_index_statistics(index_name)
+        doc_count = stats.get("document_count", stats.get("documentCount", 0))
+        if doc_count > 0:
+            logger.info(
+                "Verified index '%s' is populated (document_count=%d).",
+                index_name,
+                doc_count,
+            )
+            return
+        if attempt < INDEX_COUNT_CHECK_ATTEMPTS:
+            logger.warning(
+                "Index '%s' still empty after upload (attempt %d/%d). Rechecking in %ds...",
+                index_name,
+                attempt,
+                INDEX_COUNT_CHECK_ATTEMPTS,
+                INDEX_COUNT_CHECK_SLEEP_SECONDS,
+            )
+            time.sleep(INDEX_COUNT_CHECK_SLEEP_SECONDS)
+
+    raise RuntimeError(
+        f"ALARM: index '{index_name}' is empty after upload verification "
+        f"({doc_count} documents)."
+    )
+
+
 def run_etl(xlsx_path: Path, index_name: str, settings: AppSettings, output_dir: Path) -> dict:
     """Core ETL: prepare documents, generate change summary, then replace the index."""
 
@@ -320,6 +403,11 @@ def run_etl(xlsx_path: Path, index_name: str, settings: AppSettings, output_dir:
             for src in change_summary["removed_sources"]:
                 logger.info("  - %s", src)
 
+    if not documents:
+        raise RuntimeError(
+            f"ALARM: refusing to replace index '{index_name}' because prepared document list is empty."
+        )
+
     # --- Phase 2: replace index and upload (only after all docs are ready) ---
     index_client = SearchIndexClient(
         settings.AZURE_SEARCH_ENDPOINT,
@@ -334,12 +422,7 @@ def run_etl(xlsx_path: Path, index_name: str, settings: AppSettings, output_dir:
         if e.status_code != HTTP_STATUS_NOT_FOUND:
             raise
 
-    try:
-        index_client.create_index(index_schema)
-        logger.info("Index '%s' created.", index_name)
-    except HttpResponseError:
-        logger.exception("Failed to create index '%s'.", index_name)
-        sys.exit(1)
+    _create_index_with_retry(index_client, index_schema, index_name)
 
     search_client = SearchClient(
         settings.AZURE_SEARCH_ENDPOINT,
@@ -348,11 +431,24 @@ def run_etl(xlsx_path: Path, index_name: str, settings: AppSettings, output_dir:
     )
     try:
         upload_result = search_client.upload_documents(documents)
-        logger.info("Uploaded %d documents", len(documents))
+        failed_uploads = [res for res in upload_result if not res.succeeded]
+        if failed_uploads:
+            sample_errors = [
+                f"{res.key}: {getattr(res, 'error_message', 'unknown upload error')}"
+                for res in failed_uploads[:5]
+            ]
+            raise RuntimeError(
+                f"ALARM: {len(failed_uploads)} document uploads failed for index '{index_name}'. "
+                f"Sample errors: {' | '.join(sample_errors)}"
+            )
+        logger.info("Uploaded %d documents to '%s'", len(documents), index_name)
         for res in upload_result:
             logger.debug("  %s: %s", res.key, res.succeeded)
     except (HttpResponseError, ValueError, TypeError):
         logger.exception("Error uploading documents")
+        raise
+
+    _assert_index_not_empty(index_client, index_name)
 
     return {"index_name": index_name, "chunk_count": len(documents)}
 

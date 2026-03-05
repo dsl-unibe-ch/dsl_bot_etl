@@ -5,7 +5,6 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-
 import yaml
 
 from src.etl_crawler.config import AppSettings
@@ -77,7 +76,7 @@ def run_pipeline(
     customer_config = load_customer_config(customer_name)
     app_settings = AppSettings()
 
-    ctx = RunContext(
+    run_context = RunContext(
         customer_name=customer_name,
         data_dir=data_dir,
         customer_config=customer_config,
@@ -97,7 +96,7 @@ def run_pipeline(
 
     for step_name in requested_steps:
         logger.info("Running step: %s", step_name)
-        STEP_REGISTRY[step_name](ctx)
+        STEP_REGISTRY[step_name](run_context)
         logger.info("Completed step: %s", step_name)
 
     logger.info("Pipeline finished.")

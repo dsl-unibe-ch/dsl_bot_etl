@@ -1,0 +1,12 @@
+.venv/
+data/
+.env.dev.app
+.env.prod.app
+.env.etl.example
+.env.prod.example
+.env.dev.example
+tests/
+.git/
+__pycache__/
+*.pyc
+.ruff_cache/
