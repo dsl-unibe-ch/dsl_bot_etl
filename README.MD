@@ -143,6 +143,7 @@ There are three levels of environment variables in this project:
     | `AZURE_STORAGE_ACCOUNT_PRIMARY_CONNECTION_STRING` | Connection string for the storage account holding secrets | Azure Portal → Global Resource Group Storage Account|
     | `AZURE_CONTAINER_STORAGE_NAME` | Blob container for logs (`kioskbot-logs`) | Global Resource Group Storage Account Access Keys  |
     | `AZURE_CONTAINER_STORAGE_SECRETS_NAME` | Blob container for secret files (`kioskbot-secrets`) | Global Resource Group Storage Account Access Keys |
+    | `AZURE_CONTAINER_STORAGE_ETL_FILES_NAME` | Blob container for ETL outputs and intermediate files (`kioskbot-etl-files`) | Global Resource Group Storage Account Access Keys |
     | `CUSTOMER_NAME_LIST` | Space-separated customer names (`quality innovation`) | Matches YAML configs in `customer_configs/` |
     | `AZURE_ETL_RESOURCE_GROUP_NAME` | Resource group for the ETL infrastructure | Azure Portal |
     | `AZURE_CONTAINER_REGISTRY_NAME` | Existing ACR name | Azure Portal → Container registries |
@@ -289,6 +290,7 @@ Required `.env.etl` keys:
 - `AZURE_STORAGE_ACCOUNT_PRIMARY_CONNECTION_STRING`
 - `AZURE_CONTAINER_STORAGE_NAME`
 - `AZURE_CONTAINER_STORAGE_SECRETS_NAME`
+- `AZURE_CONTAINER_STORAGE_ETL_FILES_NAME`
 - `CUSTOMER_NAME_LIST`
 - `AZURE_ETL_RESOURCE_GROUP_NAME`
 - `AZURE_CONTAINER_REGISTRY_NAME`
@@ -297,6 +299,8 @@ Required `.env.etl` keys:
 - `AZURE_CONTAINER_APP_ENV_NAME`
 - `AZURE_LOG_ANALYTICS_WORKSPACE_NAME`
 - `WEBHOOK_URL` (optional)
+
+The ETL artifact container configured by `AZURE_CONTAINER_STORAGE_ETL_FILES_NAME` is created automatically by the pipeline if it does not already exist.
 
 Image and job naming are derived from `pyproject.toml`:
 
@@ -344,6 +348,7 @@ To be implemented
   ```bash
   make provision-dev ACR_USERNAME="<acr-user>" ACR_PASSWORD="<acr-password>"
   ```
+   This command automatically stops and deletes older `*-dev` jobs from previous versions before creating the new one. This command also authenticates to the ACR to pull the image.
 3. Verify dev job configuration:
   ```bash
   make job-name ENV=dev
@@ -354,6 +359,7 @@ To be implemented
   ```bash
   make provision-prod ACR_USERNAME="<acr-user>" ACR_PASSWORD="<acr-password>"
   ```
+   This command automatically stops and deletes older `*-prod` jobs from previous versions before creating the new one. This command also authenticates to the ACR to pull the image.
 5. Verify prod job configuration:
   ```bash
   make job-name ENV=prod

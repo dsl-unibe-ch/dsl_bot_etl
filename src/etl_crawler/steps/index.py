@@ -56,6 +56,7 @@ INDEX_CREATE_MAX_ATTEMPTS = 4
 INDEX_CREATE_RETRY_SECONDS = 5
 INDEX_COUNT_CHECK_ATTEMPTS = 8
 INDEX_COUNT_CHECK_SLEEP_SECONDS = 5
+INDEX_EXPORT_PAGE_SIZE = 1000
 
 
 
@@ -320,6 +321,50 @@ def _assert_index_not_empty(index_client: SearchIndexClient, index_name: str) ->
     )
 
 
+def _index_exists(index_client: SearchIndexClient, index_name: str) -> bool:
+    """Return True if the index currently exists."""
+    try:
+        index_client.get_index(index_name)
+        return True
+    except HttpResponseError as exc:
+        if exc.status_code == HTTP_STATUS_NOT_FOUND:
+            return False
+        raise
+
+
+def _backup_existing_index(
+    index_name: str,
+    settings: AppSettings,
+    output_dir: Path,
+) -> Path | None:
+    """Export current index documents to JSONL before replacement."""
+    index_client = SearchIndexClient(
+        settings.AZURE_SEARCH_ENDPOINT,
+        AzureKeyCredential(settings.AZURE_SEARCH_SERVICE_PRIMARY_ADMIN_KEY),
+    )
+    if not _index_exists(index_client, index_name):
+        logger.info("No existing index '%s' found. Skipping backup.", index_name)
+        return None
+
+    search_client = SearchClient(
+        settings.AZURE_SEARCH_ENDPOINT,
+        index_name,
+        AzureKeyCredential(settings.AZURE_SEARCH_SERVICE_PRIMARY_ADMIN_KEY),
+    )
+    output_dir.mkdir(parents=True, exist_ok=True)
+    backup_path = output_dir / f"{index_name}_backup_before_replace_{int(time.time())}.jsonl"
+
+    count = 0
+    results = search_client.search(search_text="*", top=INDEX_EXPORT_PAGE_SIZE)
+    with backup_path.open("w", encoding="utf-8") as f:
+        for result in results:
+            f.write(json.dumps(dict(result), ensure_ascii=False) + "\n")
+            count += 1
+
+    logger.info("Backed up %d documents from '%s' to %s", count, index_name, backup_path)
+    return backup_path
+
+
 def run_etl(xlsx_path: Path, index_name: str, settings: AppSettings, output_dir: Path) -> dict:
     """Core ETL: prepare documents, generate change summary, then replace the index."""
 
@@ -409,6 +454,10 @@ def run_etl(xlsx_path: Path, index_name: str, settings: AppSettings, output_dir:
         )
 
     # --- Phase 2: replace index and upload (only after all docs are ready) ---
+    backup_path = _backup_existing_index(index_name, settings, output_dir)
+    if backup_path:
+        logger.info("Created index backup before delete: %s", backup_path)
+
     index_client = SearchIndexClient(
         settings.AZURE_SEARCH_ENDPOINT,
         AzureKeyCredential(settings.AZURE_SEARCH_SERVICE_PRIMARY_ADMIN_KEY),

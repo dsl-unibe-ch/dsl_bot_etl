@@ -18,6 +18,7 @@ class ETLSettings(BaseSettings):
     AZURE_STORAGE_ACCOUNT_PRIMARY_CONNECTION_STRING: str | None = Field(None, description="The primary connection string for the Azure Storage Account")
     AZURE_CONTAINER_STORAGE_NAME: str | None = None
     AZURE_CONTAINER_STORAGE_SECRETS_NAME: str | None = None
+    AZURE_CONTAINER_STORAGE_ETL_FILES_NAME: str | None = None
     model_config = SettingsConfigDict(env_file=_etl_env_file, env_file_encoding="utf-8")
 
 class AppSettings(BaseSettings):
