@@ -10,6 +10,7 @@ AZURE_RESOURCE_GROUP_LOCATION ?= $(shell [ -f .env.etl ] && grep '^AZURE_RESOURC
 AZURE_CONTAINER_APP_ENV_NAME ?= $(shell [ -f .env.etl ] && grep '^AZURE_CONTAINER_APP_ENV_NAME=' .env.etl | cut -d '=' -f2-)
 AZURE_LOG_ANALYTICS_WORKSPACE_NAME ?= $(shell [ -f .env.etl ] && grep '^AZURE_LOG_ANALYTICS_WORKSPACE_NAME=' .env.etl | cut -d '=' -f2-)
 STORAGE_CONN_STR ?= $(shell [ -f .env.etl ] && grep '^AZURE_STORAGE_ACCOUNT_PRIMARY_CONNECTION_STRING=' .env.etl | cut -d '=' -f2-)
+AZURE_CONTAINER_STORAGE_ETL_FILES_NAME ?= $(shell [ -f .env.etl ] && grep '^AZURE_CONTAINER_STORAGE_ETL_FILES_NAME=' .env.etl | cut -d '=' -f2-)
 WEBHOOK_URL ?= $(shell [ -f .env.etl ] && grep '^WEBHOOK_URL=' .env.etl | cut -d '=' -f2-)
 
 PROJECT_NAME            := $(shell grep '^name' pyproject.toml | head -1 | cut -d '"' -f2)
@@ -143,7 +144,40 @@ provision-infra:
 	  --logs-workspace-id "$$(az monitor log-analytics workspace show --resource-group $(AZURE_ETL_RESOURCE_GROUP_NAME) --workspace-name $(AZURE_LOG_ANALYTICS_WORKSPACE_NAME) --query customerId -o tsv)" \
 	  --logs-workspace-key "$$(az monitor log-analytics workspace get-shared-keys --resource-group $(AZURE_ETL_RESOURCE_GROUP_NAME) --workspace-name $(AZURE_LOG_ANALYTICS_WORKSPACE_NAME) --query primarySharedKey -o tsv)"
 
-provision-job: require-acr-creds require-image-in-acr require-env
+cleanup-old-env-jobs: require-env
+	@current_job="$(JOB_NAME)-$(ENV)"; \
+	all_env_jobs=$$(az containerapp job list \
+	  --resource-group $(AZURE_ETL_RESOURCE_GROUP_NAME) \
+	  --query "[?ends_with(name, '-$(ENV)') && starts_with(name, '$(PROJECT_NAME_SAFE)-')].name" -o tsv | tr -d '\r'); \
+	if [ -z "$$all_env_jobs" ]; then \
+	  echo "No old $(ENV) jobs to cleanup."; \
+	else \
+	  for job in $$all_env_jobs; do \
+	    if [ "$$job" = "$$current_job" ]; then \
+	      continue; \
+	    fi; \
+	    echo "Stopping running executions for old $(ENV) job $$job..."; \
+	    executions=$$(az containerapp job execution list \
+	      --name $$job \
+	      --resource-group $(AZURE_ETL_RESOURCE_GROUP_NAME) \
+	      --query "[?properties.status=='Running'].name" -o tsv | tr -d '\r'); \
+	    if [ -n "$$executions" ]; then \
+	      for execution in $$executions; do \
+	        az containerapp job execution stop \
+	          --name $$execution \
+	          --job-name $$job \
+	          --resource-group $(AZURE_ETL_RESOURCE_GROUP_NAME); \
+	      done; \
+	    fi; \
+	    echo "Deleting old $(ENV) job $$job..."; \
+	    az containerapp job delete \
+	      --name $$job \
+	      --resource-group $(AZURE_ETL_RESOURCE_GROUP_NAME) \
+	      --yes; \
+	  done; \
+	fi
+
+provision-job: require-acr-creds require-image-in-acr require-env cleanup-old-env-jobs
 	@trigger_type=Manual; \
 	cron_args=""; \
 	if [ "$(ENV)" = "dev" ]; then \
@@ -170,6 +204,7 @@ provision-job: require-acr-creds require-image-in-acr require-env
 	    AZURE_STORAGE_ACCOUNT_PRIMARY_CONNECTION_STRING=secretref:storage-conn-str \
 	    AZURE_CONTAINER_STORAGE_NAME=kioskbot-logs \
 	    AZURE_CONTAINER_STORAGE_SECRETS_NAME=kioskbot-secrets \
+	    AZURE_CONTAINER_STORAGE_ETL_FILES_NAME="$(AZURE_CONTAINER_STORAGE_ETL_FILES_NAME)" \
 	    AZURE_ETL_RESOURCE_GROUP_NAME=\"$(AZURE_ETL_RESOURCE_GROUP_NAME)\" \
 	    AZURE_CONTAINER_REGISTRY_NAME=\"$(AZURE_CONTAINER_REGISTRY_NAME)\" \
 	    AZURE_CONTAINER_REGISTRY_LOGIN_SERVER=\"$(AZURE_CONTAINER_REGISTRY_LOGIN_SERVER)\" \
@@ -281,4 +316,3 @@ destroy-infra: require-destroy-confirm
 	  --resource-group $(AZURE_ETL_RESOURCE_GROUP_NAME) \
 	  --workspace-name $(AZURE_LOG_ANALYTICS_WORKSPACE_NAME) \
 	  --yes
-
