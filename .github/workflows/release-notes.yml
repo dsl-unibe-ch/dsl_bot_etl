@@ -3,6 +3,12 @@ name: Generate Release Notes
 on:
   release:
     types: [published]
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: "Release tag to update (e.g. 0.1.2)"
+        required: true
+        type: string
 
 jobs:
   release-notes:
@@ -10,6 +16,8 @@ jobs:
     permissions:
       contents: write
       pull-requests: read
+    env:
+      GH_TOKEN: ${{ github.token }}
 
     steps:
       - name: Checkout repository
@@ -21,7 +29,13 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y gh jq
 
       - name: Get release tag
-        run: echo "TAG_NAME=${{ github.event.release.tag_name }}" >> "$GITHUB_ENV"
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "TAG_NAME=${{ inputs.tag_name }}" >> "$GITHUB_ENV"
+          else
+            echo "TAG_NAME=${{ github.event.release.tag_name }}" >> "$GITHUB_ENV"
+          fi
 
       - name: Get previous tag safely
         shell: bash
@@ -130,6 +144,4 @@ jobs:
           echo "**Full Changelog**: https://github.com/${{ github.repository }}/commits/$TAG_NAME" >> release_notes.md
 
       - name: Update GitHub release with notes
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: gh release edit "$TAG_NAME" --notes-file release_notes.md
