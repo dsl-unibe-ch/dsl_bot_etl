@@ -35,7 +35,7 @@ jobs:
             echo "No previous tag found, using all commits."
           fi
 
-      - name: Collect Jira IDs from PRs and git history
+      - name: Collect PRs and Jira IDs
         shell: bash
         run: |
           rm -f jira_ids.txt prs.json merges.txt commits.txt
@@ -44,7 +44,7 @@ jobs:
             gh pr list \
               --state merged \
               --limit 200 \
-              --json headRefName,title,mergedAt \
+              --json number,url,author,title,body,headRefName,mergedAt \
               > prs.json || echo "[]" > prs.json
 
             git log --pretty=format:"%s%n%b" > commits.txt
@@ -57,14 +57,14 @@ jobs:
               --state merged \
               --search "merged:>$PREV_DATE" \
               --limit 200 \
-              --json headRefName,title,mergedAt \
+              --json number,url,author,title,body,headRefName,mergedAt \
               > prs.json || echo "[]" > prs.json
 
             git log "$PREV_TAG..$TAG_NAME" --pretty=format:"%s%n%b" > commits.txt
             git log "$PREV_TAG..$TAG_NAME" --merges --pretty=format:"%s" > merges.txt
           fi
 
-          jq -r '.[] | .headRefName, .title' prs.json \
+          jq -r '.[] | .headRefName, .title, (.body // "")' prs.json \
             | grep -Eo '[A-Z][A-Z0-9]+-[0-9]+' >> jira_ids.txt || true
 
           grep -Eo '[A-Z][A-Z0-9]+-[0-9]+' merges.txt >> jira_ids.txt || true
@@ -78,7 +78,7 @@ jobs:
           echo "Collected Jira IDs:"
           cat jira_ids.txt || echo "None found"
 
-      - name: Fetch Jira ticket details
+      - name: Build release notes from PRs and Jira
         env:
           JIRA_USER: ${{ secrets.JIRA_USER }}
           JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
@@ -86,33 +86,48 @@ jobs:
         shell: bash
         run: |
           baseURL="${JIRA_BASE_URL%/}"
+          declare -A jira_summary_cache
 
           {
-            echo "## Release Notes"
-            echo
-            echo "Release: $TAG_NAME"
-            if [ -n "$PREV_TAG" ]; then
-              echo "Changes since: $PREV_TAG"
-            fi
+            echo "## What's Changed"
             echo
           } > release_notes.md
 
-          if [ -s jira_ids.txt ]; then
-            while read -r ID; do
-              RESPONSE=$(curl -s \
-                -u "$JIRA_USER:$JIRA_API_TOKEN" \
-                -H "Accept: application/json" \
-                "$baseURL/rest/api/2/issue/$ID")
+          if [ "$(jq length prs.json)" -gt 0 ]; then
+            while IFS= read -r PR; do
+              TITLE=$(echo "$PR" | jq -r '.title')
+              URL=$(echo "$PR" | jq -r '.url')
+              AUTHOR=$(echo "$PR" | jq -r '.author.login // "unknown"')
+              HEAD_REF=$(echo "$PR" | jq -r '.headRefName // ""')
+              BODY=$(echo "$PR" | jq -r '.body // ""')
 
-              TITLE=$(echo "$RESPONSE" | jq -r '.fields.summary // "No summary found"')
-              TYPE=$(echo "$RESPONSE" | jq -r '.fields.issuetype.name // "Unknown type"')
-              STATUS=$(echo "$RESPONSE" | jq -r '.fields.status.name // "Unknown status"')
+              JIRA_ID=$(printf "%s\n%s\n%s\n" "$HEAD_REF" "$TITLE" "$BODY" | grep -Eo '[A-Z][A-Z0-9]+-[0-9]+' | head -n 1 || true)
 
-              echo "- [$ID]($baseURL/browse/$ID) $TITLE ($TYPE, $STATUS)" >> release_notes.md
-            done < jira_ids.txt
+              if [ -n "$JIRA_ID" ] && [ -n "$baseURL" ] && [ -n "$JIRA_USER" ] && [ -n "$JIRA_API_TOKEN" ]; then
+                if [ -z "${jira_summary_cache[$JIRA_ID]}" ]; then
+                  RESPONSE=$(curl -s \
+                    -u "$JIRA_USER:$JIRA_API_TOKEN" \
+                    -H "Accept: application/json" \
+                    "$baseURL/rest/api/2/issue/$JIRA_ID")
+                  jira_summary_cache[$JIRA_ID]=$(echo "$RESPONSE" | jq -r '.fields.summary // empty')
+                fi
+
+                ISSUE_SUMMARY="${jira_summary_cache[$JIRA_ID]}"
+                if [ -n "$ISSUE_SUMMARY" ]; then
+                  echo "* [$JIRA_ID]($baseURL/browse/$JIRA_ID) $ISSUE_SUMMARY by @$AUTHOR in $URL" >> release_notes.md
+                else
+                  echo "* [$JIRA_ID]($baseURL/browse/$JIRA_ID) by @$AUTHOR in $URL" >> release_notes.md
+                fi
+              else
+                echo "* $TITLE by @$AUTHOR in $URL" >> release_notes.md
+              fi
+            done < <(jq -c 'sort_by(.mergedAt)[]' prs.json)
           else
-            echo "_No Jira tickets found for this release._" >> release_notes.md
+            echo "_No merged pull requests found for this release._" >> release_notes.md
           fi
+
+          echo >> release_notes.md
+          echo "**Full Changelog**: https://github.com/${{ github.repository }}/commits/$TAG_NAME" >> release_notes.md
 
       - name: Update GitHub release with notes
         env:
