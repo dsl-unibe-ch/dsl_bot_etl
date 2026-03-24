@@ -1,0 +1,120 @@
+name: Generate Release Notes
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  release-notes:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install GitHub CLI and jq
+        run: sudo apt-get update && sudo apt-get install -y gh jq
+
+      - name: Get release tag
+        run: echo "TAG_NAME=${{ github.event.release.tag_name }}" >> "$GITHUB_ENV"
+
+      - name: Get previous tag safely
+        shell: bash
+        run: |
+          if git describe --tags --abbrev=0 "${TAG_NAME}^" >/dev/null 2>&1; then
+            PREV_TAG=$(git describe --tags --abbrev=0 "${TAG_NAME}^")
+            echo "PREV_TAG=$PREV_TAG" >> "$GITHUB_ENV"
+            echo "Found previous tag: $PREV_TAG"
+          else
+            echo "PREV_TAG=" >> "$GITHUB_ENV"
+            echo "No previous tag found, using all commits."
+          fi
+
+      - name: Collect Jira IDs from PRs and git history
+        shell: bash
+        run: |
+          rm -f jira_ids.txt prs.json merges.txt commits.txt
+
+          if [ -z "$PREV_TAG" ]; then
+            gh pr list \
+              --state merged \
+              --limit 200 \
+              --json headRefName,title,mergedAt \
+              > prs.json || echo "[]" > prs.json
+
+            git log --pretty=format:"%s%n%b" > commits.txt
+            git log --merges --pretty=format:"%s" > merges.txt
+          else
+            PREV_DATE=$(git log -1 --format=%aI "$PREV_TAG")
+            echo "Previous tag date: $PREV_DATE"
+
+            gh pr list \
+              --state merged \
+              --search "merged:>$PREV_DATE" \
+              --limit 200 \
+              --json headRefName,title,mergedAt \
+              > prs.json || echo "[]" > prs.json
+
+            git log "$PREV_TAG..$TAG_NAME" --pretty=format:"%s%n%b" > commits.txt
+            git log "$PREV_TAG..$TAG_NAME" --merges --pretty=format:"%s" > merges.txt
+          fi
+
+          jq -r '.[] | .headRefName, .title' prs.json \
+            | grep -Eo '[A-Z][A-Z0-9]+-[0-9]+' >> jira_ids.txt || true
+
+          grep -Eo '[A-Z][A-Z0-9]+-[0-9]+' merges.txt >> jira_ids.txt || true
+          grep -Eo '[A-Z][A-Z0-9]+-[0-9]+' commits.txt >> jira_ids.txt || true
+
+          if [ -f jira_ids.txt ]; then
+            sort -u jira_ids.txt > jira_ids_clean.txt
+            mv jira_ids_clean.txt jira_ids.txt
+          fi
+
+          echo "Collected Jira IDs:"
+          cat jira_ids.txt || echo "None found"
+
+      - name: Fetch Jira ticket details
+        env:
+          JIRA_USER: ${{ secrets.JIRA_USER }}
+          JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+          JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
+        shell: bash
+        run: |
+          baseURL="${JIRA_BASE_URL%/}"
+
+          {
+            echo "## Release Notes"
+            echo
+            echo "Release: $TAG_NAME"
+            if [ -n "$PREV_TAG" ]; then
+              echo "Changes since: $PREV_TAG"
+            fi
+            echo
+          } > release_notes.md
+
+          if [ -s jira_ids.txt ]; then
+            while read -r ID; do
+              RESPONSE=$(curl -s \
+                -u "$JIRA_USER:$JIRA_API_TOKEN" \
+                -H "Accept: application/json" \
+                "$baseURL/rest/api/2/issue/$ID")
+
+              TITLE=$(echo "$RESPONSE" | jq -r '.fields.summary // "No summary found"')
+              TYPE=$(echo "$RESPONSE" | jq -r '.fields.issuetype.name // "Unknown type"')
+              STATUS=$(echo "$RESPONSE" | jq -r '.fields.status.name // "Unknown status"')
+
+              echo "- [$ID]($baseURL/browse/$ID) $TITLE ($TYPE, $STATUS)" >> release_notes.md
+            done < jira_ids.txt
+          else
+            echo "_No Jira tickets found for this release._" >> release_notes.md
+          fi
+
+      - name: Update GitHub release with notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit "$TAG_NAME" --notes-file release_notes.md
