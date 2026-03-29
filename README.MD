@@ -297,7 +297,6 @@ Required `.env.etl` keys:
 - `AZURE_CONTAINER_REGISTRY_LOGIN_SERVER`
 - `AZURE_RESOURCE_GROUP_LOCATION`
 - `AZURE_CONTAINER_APP_ENV_NAME`
-- `AZURE_LOG_ANALYTICS_WORKSPACE_NAME`
 - `WEBHOOK_URL` (optional)
 
 The ETL artifact container configured by `AZURE_CONTAINER_STORAGE_ETL_FILES_NAME` is created automatically by the pipeline if it does not already exist.
@@ -425,7 +424,7 @@ make trigger ENV=prod PROD_APPROVED=YES
 - Resources: `--cpu 2 --memory 4Gi` (valid Consumption pairing)
 - ACR: existing registry (`crkbglobal001`), no ACR provisioning target
 - Secrets strategy: Storage connection string is read from `.env.etl`; ACR credentials are passed at runtime as `ACR_USERNAME` and `ACR_PASSWORD` when creating jobs
-- Logging workspace: `provision-infra` creates/uses a fixed Log Analytics workspace name from `.env.etl` (`AZURE_LOG_ANALYTICS_WORKSPACE_NAME`) instead of auto-generated names
+- Logging: `provision-infra` creates the Container Apps environment without a dedicated Log Analytics workspace in `.env.etl`; Azure associates platform logging with the environment as configured in Azure (see Portal / CLI docs for your subscription).
 
 
 ### Useful commands
@@ -435,7 +434,7 @@ make trigger ENV=prod PROD_APPROVED=YES
 | `make docker-build-image` | Build local Docker image (`kioskbot-etl:{VERSION}`) |
 | `make docker-push-image ACR_USERNAME="..." ACR_PASSWORD="..."` | Tag and push image to ACR |
 | `make provision-rg` | Create ETL resource group (idempotent) |
-| `make provision-infra` | Create Container Apps environment + Log Analytics workspace |
+| `make provision-infra` | Create Container Apps environment |
 | `make provision-dev ACR_USERNAME="..." ACR_PASSWORD="..."` | Create/update dev job (requires ACR credentials) |
 | `make provision-prod ACR_USERNAME="..." ACR_PASSWORD="..."` | Create/update prod job (requires ACR credentials) |
 | `make jobs-list` | List all Container Apps jobs in the ETL resource group |
@@ -452,4 +451,4 @@ make trigger ENV=prod PROD_APPROVED=YES
 | `make smoke-test ENV=dev` | Run smoke tests locally against dev indexes |
 | `make destroy-job ENV=dev DESTROY_CONFIRM=YES` | Delete only dev Container Apps job |
 | `make destroy-job ENV=prod DESTROY_CONFIRM=YES` | Delete only prod Container Apps job |
-| `make destroy-infra DESTROY_CONFIRM=YES` | Delete Container Apps environment + configured Log Analytics workspace |
+| `make destroy-infra DESTROY_CONFIRM=YES` | Delete Container Apps environment |
