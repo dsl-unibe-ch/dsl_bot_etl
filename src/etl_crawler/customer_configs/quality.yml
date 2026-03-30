@@ -91,9 +91,9 @@ allow:
   - /qualitaetssicherung_und__entwicklung/qualitaetsstrategie/
   - /qualitaetssicherung_und__entwicklung/gremien/
   - /qualitaetssicherung_und__entwicklung/rechtliche_grundlagen/
-  - /journey_der_lehre/
-  - /pruefungen_gestalten/
-  - /lehrimpulse__unibe/
+  - /journey_der_lehre/lehre_evaluieren
+  - /journey_der_lehre/pruefungen_gestalten
+  - /journey_der_lehre/lehrimpulse__unibe
 deny_domains:
   - edit.cms.unibe.ch
   - edu.unibe.ch
