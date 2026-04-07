@@ -8,7 +8,6 @@ AZURE_CONTAINER_REGISTRY_NAME ?= $(shell [ -f .env.etl ] && grep '^AZURE_CONTAIN
 AZURE_CONTAINER_REGISTRY_LOGIN_SERVER ?= $(shell [ -f .env.etl ] && grep '^AZURE_CONTAINER_REGISTRY_LOGIN_SERVER=' .env.etl | cut -d '=' -f2-)
 AZURE_RESOURCE_GROUP_LOCATION ?= $(shell [ -f .env.etl ] && grep '^AZURE_RESOURCE_GROUP_LOCATION=' .env.etl | cut -d '=' -f2-)
 AZURE_CONTAINER_APP_ENV_NAME ?= $(shell [ -f .env.etl ] && grep '^AZURE_CONTAINER_APP_ENV_NAME=' .env.etl | cut -d '=' -f2-)
-AZURE_LOG_ANALYTICS_WORKSPACE_NAME ?= $(shell [ -f .env.etl ] && grep '^AZURE_LOG_ANALYTICS_WORKSPACE_NAME=' .env.etl | cut -d '=' -f2-)
 STORAGE_CONN_STR ?= $(shell [ -f .env.etl ] && grep '^AZURE_STORAGE_ACCOUNT_PRIMARY_CONNECTION_STRING=' .env.etl | cut -d '=' -f2-)
 AZURE_CONTAINER_STORAGE_ETL_FILES_NAME ?= $(shell [ -f .env.etl ] && grep '^AZURE_CONTAINER_STORAGE_ETL_FILES_NAME=' .env.etl | cut -d '=' -f2-)
 WEBHOOK_URL ?= $(shell [ -f .env.etl ] && grep '^WEBHOOK_URL=' .env.etl | cut -d '=' -f2-)
@@ -133,16 +132,10 @@ provision-rg:
 	  --location $(AZURE_RESOURCE_GROUP_LOCATION)
 
 provision-infra:
-	az monitor log-analytics workspace create \
-	  --resource-group $(AZURE_ETL_RESOURCE_GROUP_NAME) \
-	  --workspace-name $(AZURE_LOG_ANALYTICS_WORKSPACE_NAME) \
-	  --location $(AZURE_RESOURCE_GROUP_LOCATION)
 	az containerapp env create \
 	  --name $(AZURE_CONTAINER_APP_ENV_NAME) \
 	  --resource-group $(AZURE_ETL_RESOURCE_GROUP_NAME) \
-	  --location $(AZURE_RESOURCE_GROUP_LOCATION) \
-	  --logs-workspace-id "$$(az monitor log-analytics workspace show --resource-group $(AZURE_ETL_RESOURCE_GROUP_NAME) --workspace-name $(AZURE_LOG_ANALYTICS_WORKSPACE_NAME) --query customerId -o tsv)" \
-	  --logs-workspace-key "$$(az monitor log-analytics workspace get-shared-keys --resource-group $(AZURE_ETL_RESOURCE_GROUP_NAME) --workspace-name $(AZURE_LOG_ANALYTICS_WORKSPACE_NAME) --query primarySharedKey -o tsv)"
+	  --location $(AZURE_RESOURCE_GROUP_LOCATION)
 
 cleanup-old-env-jobs: require-env
 	@current_job="$(JOB_NAME)-$(ENV)"; \
@@ -210,7 +203,6 @@ provision-job: require-acr-creds require-image-in-acr require-env cleanup-old-en
 	    AZURE_CONTAINER_REGISTRY_LOGIN_SERVER=\"$(AZURE_CONTAINER_REGISTRY_LOGIN_SERVER)\" \
 	    AZURE_RESOURCE_GROUP_LOCATION=\"$(AZURE_RESOURCE_GROUP_LOCATION)\" \
 	    AZURE_CONTAINER_APP_ENV_NAME=\"$(AZURE_CONTAINER_APP_ENV_NAME)\" \
-	    AZURE_LOG_ANALYTICS_WORKSPACE_NAME=\"$(AZURE_LOG_ANALYTICS_WORKSPACE_NAME)\" \
 	    WEBHOOK_URL=\"$(WEBHOOK_URL)\" \
 	    CUSTOMER_NAME_LIST=\"$(CUSTOMER_NAME_LIST)\" \
 	  --secrets \
@@ -311,8 +303,4 @@ destroy-infra: require-destroy-confirm
 	-az containerapp env delete \
 	  --name $(AZURE_CONTAINER_APP_ENV_NAME) \
 	  --resource-group $(AZURE_ETL_RESOURCE_GROUP_NAME) \
-	  --yes
-	-az monitor log-analytics workspace delete \
-	  --resource-group $(AZURE_ETL_RESOURCE_GROUP_NAME) \
-	  --workspace-name $(AZURE_LOG_ANALYTICS_WORKSPACE_NAME) \
 	  --yes

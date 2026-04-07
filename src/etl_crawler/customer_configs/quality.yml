@@ -54,14 +54,15 @@ seed_urls:
   - https://www.unibe.ch/forschung/strategie_und_fokus/forschungsfokus/zentren_und_fakultaetsuebergreifende_einheiten/index_ger.html
   - https://www.unibe.ch/studium/werkzeuge_und_arbeitshilfen/fuer_lehrende/lehrveranstaltungsevaluation/massnahmen/index_ger.html
   - https://www.unibe.ch/universitaet/portraet/selbstverstaendnis/qualitaet/qualitaetssicherung_und__entwicklung/index_ger.html
-  
+  - https://teachinghub.unibe.ch/index_ger.html
+
 static_pdfs:
   - https://www.unibe.ch/e809/e810/e812/e708931/e715528/e1070249/QSEKommunikationskonzept2024_ger.pdf
   - https://www.unibe.ch/unibe/portal/content/e809/e810/e812/e708931/e715528/e1364168/GeschaeftsordnungAKKRED_240604_ger.pdf
   - https://www.unibe.ch/unibe/portal/content/e809/e810/e812/e708931/e715528/e715531/Qualitaetsstrategie2022_ger.pdf
   - https://www.unibe.ch/unibe/portal/content/e809/e810/e812/e708931/e715528/e952029/P75938_UniBern_Imagebroschure_DE_WEB_ger.pdf
 
-allowed_domains: [www.unibe.ch, lead.unibe.ch, intern.unibe.ch, gutelehre.unibe.ch]
+allowed_domains: [www.unibe.ch, lead.unibe.ch, intern.unibe.ch, gutelehre.unibe.ch, teachinghub.unibe.ch]
 allow:
   -  /governance/
   -  /kernaufgaben/
@@ -90,7 +91,9 @@ allow:
   - /qualitaetssicherung_und__entwicklung/qualitaetsstrategie/
   - /qualitaetssicherung_und__entwicklung/gremien/
   - /qualitaetssicherung_und__entwicklung/rechtliche_grundlagen/
-  - 
+  - /journey_der_lehre/lehre_evaluieren
+  - /journey_der_lehre/pruefungen_gestalten
+  - /journey_der_lehre/lehrimpulse__unibe
 deny_domains:
   - edit.cms.unibe.ch
   - edu.unibe.ch
