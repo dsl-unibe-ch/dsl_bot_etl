@@ -96,6 +96,48 @@ run-scheduled:
 smoke-test:
 	@PYTHONPATH=$(shell pwd) $(PYTHON) scripts/smoke_test.py --ENV $(ENV)
 
+# Query Azure AI Search directly (same index name as the pipeline: kb-<customer_name>).
+# Requires curl and a populated .env.$(ENV).app with AZURE_SEARCH_* vars.
+# Example: make search-probe ENV=dev customer_name=quality
+# Default select omits text_vector (embedding) so output stays readable; override if needed.
+SEARCH_API_VERSION ?= 2023-11-01
+SEARCH_PROBE_SELECT ?= chunk_id,DocumentID,Link,Title,Title_Chunk,Category
+
+search-probe: require-env
+	@test -n "$(customer_name)" || (echo "Error: customer_name is required. Example: make search-probe ENV=dev customer_name=quality"; exit 1)
+	@_app_env=".env.$(ENV).app"; \
+	if [ ! -f "$$_app_env" ]; then echo "Error: missing $$_app_env"; exit 1; fi; \
+	ENDPOINT=$$(grep '^AZURE_SEARCH_ENDPOINT=' "$$_app_env" | cut -d= -f2- | tr -d '\r'); \
+	KEY=$$(grep '^AZURE_SEARCH_SERVICE_PRIMARY_ADMIN_KEY=' "$$_app_env" | cut -d= -f2- | tr -d '\r'); \
+	ENDPOINT=$$(echo "$$ENDPOINT" | sed 's/^[" ]*//;s/[" ]*$$//'); \
+	KEY=$$(echo "$$KEY" | sed 's/^[" ]*//;s/[" ]*$$//'); \
+	NORMALIZED=$${ENDPOINT%/}; \
+	INDEX_NAME="kb-$(customer_name)"; \
+	echo "Index: $$INDEX_NAME"; \
+	echo "POST $$NORMALIZED/indexes/$$INDEX_NAME/docs/search?api-version=$(SEARCH_API_VERSION)"; \
+	curl -sS -X POST "$$NORMALIZED/indexes/$$INDEX_NAME/docs/search?api-version=$(SEARCH_API_VERSION)" \
+	  -H "Content-Type: application/json" \
+	  -H "api-key: $$KEY" \
+	  -d "{\"search\":\"*\",\"top\":5,\"count\":true,\"select\":\"$(SEARCH_PROBE_SELECT)\"}" | $(PYTHON) -m json.tool
+
+# GET index statistics (document count + storage size). Same index naming as the pipeline: kb-<customer_name>.
+# Example: make search-count ENV=dev customer_name=quality
+search-count: require-env
+	@test -n "$(customer_name)" || (echo "Error: customer_name is required. Example: make search-count ENV=dev customer_name=quality"; exit 1)
+	@_app_env=".env.$(ENV).app"; \
+	if [ ! -f "$$_app_env" ]; then echo "Error: missing $$_app_env"; exit 1; fi; \
+	ENDPOINT=$$(grep '^AZURE_SEARCH_ENDPOINT=' "$$_app_env" | cut -d= -f2- | tr -d '\r'); \
+	KEY=$$(grep '^AZURE_SEARCH_SERVICE_PRIMARY_ADMIN_KEY=' "$$_app_env" | cut -d= -f2- | tr -d '\r'); \
+	ENDPOINT=$$(echo "$$ENDPOINT" | sed 's/^[" ]*//;s/[" ]*$$//'); \
+	KEY=$$(echo "$$KEY" | sed 's/^[" ]*//;s/[" ]*$$//'); \
+	NORMALIZED=$${ENDPOINT%/}; \
+	INDEX_NAME="kb-$(customer_name)"; \
+	echo "Index: $$INDEX_NAME"; \
+	echo "GET $$NORMALIZED/indexes/$$INDEX_NAME/stats?api-version=$(SEARCH_API_VERSION)"; \
+	curl -sS -X GET "$$NORMALIZED/indexes/$$INDEX_NAME/stats?api-version=$(SEARCH_API_VERSION)" \
+	  -H "api-key: $$KEY" \
+	  | $(PYTHON) -c "import json,sys; d=json.load(sys.stdin); dc=d.get('documentCount', d.get('document_count')); ss=d.get('storageSize', d.get('storage_size')); print('documentCount:', dc); print('storageSize:', ss)"
+
 notify:
 	@curl -sf -X POST -H "Content-Type: application/json" \
 	  -d '{"text":"ETL pipeline ($(ENV)) finished. Smoke tests passed. Trigger prod: make trigger ENV=prod"}' \
