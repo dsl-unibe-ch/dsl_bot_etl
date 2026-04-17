@@ -12,7 +12,7 @@ dependencies = [
     "openai==1.104.2",
     "langchain_core==1.2.22",
     "dotenv==0.9.9",
-    "langchain_openai==0.3.32",
+    "langchain_openai==1.1.14",
     "ftfy==6.3.1",
     "fastapi==0.116.1",
     "azure-data-tables==12.7.0",
