@@ -256,6 +256,32 @@ Skip benchmark tests (faster, no Azure required):
 ```bash
 make test-quick
 ```
+
+### Azure AI Search index checks (manual)
+
+These use `curl` against the search REST API. They read `AZURE_SEARCH_ENDPOINT` and `AZURE_SEARCH_SERVICE_PRIMARY_ADMIN_KEY` from `.env.<ENV>.app` (e.g. `.env.dev.app`) and target the same index name as the pipeline: `kb-<customer_name>`. Use a POSIX shell (e.g. Git Bash on Windows) so `grep`, `curl`, and `make` recipes behave as written.
+
+**Sample documents (readable JSON)** — omits `text_vector` by default so output is not dominated by embeddings:
+
+```bash
+make search-probe ENV=dev customer_name=quality
+```
+
+Optional: change API version (`SEARCH_API_VERSION`) or which fields are returned (`SEARCH_PROBE_SELECT`, comma-separated). Examples:
+
+```bash
+make search-probe ENV=dev customer_name=quality SEARCH_PROBE_SELECT='chunk_id,Link,Title,chunk'
+make search-probe ENV=dev customer_name=quality SEARCH_PROBE_SELECT='*'
+```
+
+**Document count** — index statistics from the service:
+
+```bash
+make search-count ENV=dev customer_name=quality
+```
+
+Prints `documentCount` and `storageSize`.
+
 </details>
 
 ## Linting
