@@ -1,6 +1,6 @@
 [project]
 name = "kioskbot-etl"
-version = "0.1.2"
+version = "0.1.3"
 description = "ETL for Kioskbot project"
 readme = "README.md"
 requires-python = "==3.12.11"
