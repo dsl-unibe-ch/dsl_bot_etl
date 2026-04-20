@@ -22,7 +22,7 @@ dependencies = [
     "azure-storage-blob==12.26.0",
     "ruff==0.12.11",
     "pre-commit==4.3.0",
-    "pytest==8.4.2",
+    "pytest==9.0.3",
     "openevals==0.1.0",
     "scrapy==2.14.2",
     "beautifulsoup4==4.13.5",
