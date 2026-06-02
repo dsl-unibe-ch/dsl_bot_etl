@@ -54,8 +54,8 @@ HTTP_STATUS_GATEWAY_TIMEOUT = 504
 
 INDEX_CREATE_MAX_ATTEMPTS = 4
 INDEX_CREATE_RETRY_SECONDS = 5
-INDEX_COUNT_CHECK_ATTEMPTS = 8
-INDEX_COUNT_CHECK_SLEEP_SECONDS = 5
+INDEX_COUNT_CHECK_ATTEMPTS = 20
+INDEX_COUNT_CHECK_SLEEP_SECONDS = 15
 INDEX_EXPORT_PAGE_SIZE = 1000
 
 
@@ -292,22 +292,23 @@ def _create_index_with_retry(
             raise
 
 
-def _assert_index_not_empty(index_client: SearchIndexClient, index_name: str) -> None:
-    """Poll index statistics and fail fast if index remains empty."""
-    doc_count = 0
+def _assert_index_not_empty(search_client: SearchClient, index_name: str) -> None:
+    """Poll index via search query and fail fast if index remains empty.
+
+    Uses a wildcard search rather than get_index_statistics because statistics
+    are eventually consistent and can lag several minutes behind actual uploads.
+    """
     for attempt in range(1, INDEX_COUNT_CHECK_ATTEMPTS + 1):
-        stats = index_client.get_index_statistics(index_name)
-        doc_count = stats.get("document_count", stats.get("documentCount", 0))
-        if doc_count > 0:
+        results = list(search_client.search("*", top=1))
+        if results:
             logger.info(
-                "Verified index '%s' is populated (document_count=%d).",
+                "Verified index '%s' is populated (at least 1 document found via search).",
                 index_name,
-                doc_count,
             )
             return
         if attempt < INDEX_COUNT_CHECK_ATTEMPTS:
             logger.warning(
-                "Index '%s' still empty after upload (attempt %d/%d). Rechecking in %ds...",
+                "Index '%s' returned no results (attempt %d/%d). Rechecking in %ds...",
                 index_name,
                 attempt,
                 INDEX_COUNT_CHECK_ATTEMPTS,
@@ -317,7 +318,7 @@ def _assert_index_not_empty(index_client: SearchIndexClient, index_name: str) ->
 
     raise RuntimeError(
         f"ALARM: index '{index_name}' is empty after upload verification "
-        f"({doc_count} documents)."
+        f"(0 documents returned by search after {INDEX_COUNT_CHECK_ATTEMPTS} attempts)."
     )
 
 
@@ -497,7 +498,7 @@ def run_etl(xlsx_path: Path, index_name: str, settings: AppSettings, output_dir:
         logger.exception("Error uploading documents")
         raise
 
-    _assert_index_not_empty(index_client, index_name)
+    _assert_index_not_empty(search_client, index_name)
 
     return {"index_name": index_name, "chunk_count": len(documents)}
 
