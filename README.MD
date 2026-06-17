@@ -380,7 +380,7 @@ To be implemented
   make job-trigger ENV=dev
   make job-cron ENV=dev
   ```
-4. Update **prod** job (manual trigger):
+4. Update **prod** job (scheduled: every Sunday at 01:00 UTC):
   ```bash
   make provision-prod ACR_USERNAME="<acr-user>" ACR_PASSWORD="<acr-password>"
   ```
@@ -391,7 +391,7 @@ To be implemented
   make job-trigger ENV=prod
   make job-cron ENV=prod
   ```
-  `job-cron` should be empty for prod because it is manual.
+  `job-cron` should return `0 1 * * 0` (every Sunday at 01:00 UTC).
 6. Trigger `dev` and observe:
   ```bash
   make trigger ENV=dev
@@ -419,29 +419,28 @@ To be implemented
 
 **Note:** Both `provision-dev` and `provision-prod` validate that the image tag exists in ACR before creating jobs.
 
-### Daily flow
+### Scheduled flow
 
-1. **02:00 UTC** — dev job starts automatically (`Schedule`)
+1. **01:00 UTC every Sunday** — both dev and prod jobs start automatically (`Schedule`)
 2. Container runs `make run-scheduled`, chaining:
    - `copy-secrets-from-container`
    - `pipeline-all-customers`
    - `smoke-test`
    - `notify`
-3. Smoke tests validate dev indexes (`kb-quality`, `kb-innovation`)
+3. Smoke tests validate indexes (`kb-quality`, `kb-innovation`)
 4. Webhook sends a status message to Teams/Slack
-5. Operator reviews dev output
-6. Operator triggers prod manually:
+
+To trigger manually at any time:
 
 ```bash
+make trigger ENV=dev
 make trigger ENV=prod PROD_APPROVED=YES
 ```
 
-7. Prod job runs the same pipeline against prod services
-
 ### Key settings
 
-- Dev job trigger: `--trigger-type Schedule --cron-expression "0 2 * * *"`
-- Prod job trigger: `--trigger-type Manual`
+- Dev job trigger: `--trigger-type Schedule --cron-expression "0 1 * * 0"` (every Sunday at 01:00 UTC)
+- Prod job trigger: `--trigger-type Schedule --cron-expression "0 1 * * 0"` (every Sunday at 01:00 UTC)
 - Job naming rule: lowercase alphanumeric + `-`, with version dots converted to dashes and base name trimmed to fit Azure's `<32` character limit after `-dev`/`-prod`
 - Parallelism: `--parallelism 1`
 - Replica completion count: `--replica-completion-count 1`

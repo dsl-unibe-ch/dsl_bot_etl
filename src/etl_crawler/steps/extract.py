@@ -40,7 +40,6 @@ class ContentExtractor:
         self.customer_name = customer_name
         self.output_dir = output_dir
         self.output_dir.mkdir(parents=True, exist_ok=True)
-        self.current_base_url: str | None = None
 
     async def expand_all_accordions(self, page: Page) -> int:
         """Expand all accordions on the page."""
@@ -107,7 +106,7 @@ class ContentExtractor:
                 pass
         return len(tabs)
 
-    def extract_text_content(self, soup: BeautifulSoup) -> str:
+    def extract_text_content(self, soup: BeautifulSoup, base_url: str | None = None) -> str:
         """Extract text content from the page."""
         main_content = None
         for selector in ["main", '[role="main"]', "article", ".content", "#content", "body"]:
@@ -127,13 +126,13 @@ class ContentExtractor:
             element.decompose()
 
         lines: list[str] = []
-        self._extract_text_recursive(main_content, lines, level=0)
+        self._extract_text_recursive(main_content, lines, level=0, base_url=base_url)
         result = "\n".join(lines)
         while "\n\n\n" in result:
             result = result.replace("\n\n\n", "\n\n")
         return result.strip()
 
-    def _extract_text_recursive(self, element: Any, lines: list[str], level: int = 0) -> None:
+    def _extract_text_recursive(self, element: Any, lines: list[str], level: int = 0, base_url: str | None = None) -> None:
         """Extract text content from the element recursively."""
         if isinstance(element, NavigableString):
             text = str(element).strip()
@@ -149,7 +148,7 @@ class ContentExtractor:
             text = element.get_text(strip=True)
             href = element.get("href", "")
             if text and href:
-                absolute_url = urljoin(self.current_base_url, href) if self.current_base_url else href
+                absolute_url = urljoin(base_url, href) if base_url else href
                 if absolute_url.startswith("http"):
                     lines.append(f"{text} {absolute_url}")
                 else:
@@ -167,12 +166,12 @@ class ContentExtractor:
                 lines.append("")
         elif element.name in ("p", "div", "section", "article"):
             for child in element.children:
-                self._extract_text_recursive(child, lines, level + 1)
+                self._extract_text_recursive(child, lines, level + 1, base_url)
             if element.name in ("p", "section") and lines and lines[-1]:
                 lines.append("")
         elif element.name == "li":
             for child in element.children:
-                self._extract_text_recursive(child, lines, level + 1)
+                self._extract_text_recursive(child, lines, level + 1, base_url)
         elif element.name == "br":
             lines.append("")
         elif element.name == "summary":
@@ -183,11 +182,10 @@ class ContentExtractor:
                 lines.append(text + " ")
         else:
             for child in element.children:
-                self._extract_text_recursive(child, lines, level)
+                self._extract_text_recursive(child, lines, level, base_url)
 
     async def process_url(self, page: Page, url: str, index: int) -> dict[str, Any]:
         """Process the URL and extract text content."""
-        self.current_base_url = url
         try:
             await page.goto(url, wait_until="networkidle", timeout=30000)
             await asyncio.sleep(1)
@@ -195,7 +193,7 @@ class ContentExtractor:
             await self.click_all_tabs(page)
             html = await page.content()
             soup = BeautifulSoup(html, "html.parser")
-            content = self.extract_text_content(soup)
+            content = self.extract_text_content(soup, base_url=url)
             return {
                 "url": url,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -214,20 +212,29 @@ class ContentExtractor:
         with output_file.open("a", encoding="utf-8") as f:
             f.write(json.dumps(result, ensure_ascii=False) + "\n")
 
-    async def process_urls(self, urls: list[str], output_file: Path) -> None:
-        """Process the URLs and extract text content."""
+    async def process_urls(self, urls: list[str], output_file: Path, concurrency: int = 3) -> None:
+        """Process the URLs using up to *concurrency* parallel Playwright pages."""
+        semaphore = asyncio.Semaphore(concurrency)
+        write_lock = asyncio.Lock()
+
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True)
             context = await browser.new_context(
                 viewport={"width": 1920, "height": 1080},
                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
             )
-            page = await context.new_page()
             try:
-                for i, url in enumerate(urls, start=1):
-                    result = await self.process_url(page, url, i)
-                    self.save_result(result, output_file)
-                    await asyncio.sleep(1)
+                async def process_one(index: int, url: str) -> None:
+                    async with semaphore:
+                        page = await context.new_page()
+                        try:
+                            result = await self.process_url(page, url, index)
+                        finally:
+                            await page.close()
+                    async with write_lock:
+                        self.save_result(result, output_file)
+
+                await asyncio.gather(*(process_one(i, url) for i, url in enumerate(urls, start=1)))
             finally:
                 await browser.close()
 
@@ -381,8 +388,9 @@ def run(run_context: RunContext) -> ExtractResult:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         try:
+            concurrency = run_context.customer_config.get("extract_concurrency", 3)
             extractor = ContentExtractor(run_context.customer_name, run_context.data_dir)
-            loop.run_until_complete(extractor.process_urls(urls, output_file))
+            loop.run_until_complete(extractor.process_urls(urls, output_file, concurrency=concurrency))
         finally:
             loop.close()
 

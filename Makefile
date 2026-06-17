@@ -213,12 +213,8 @@ cleanup-old-env-jobs: require-env
 	fi
 
 provision-job: require-acr-creds require-image-in-acr require-env cleanup-old-env-jobs
-	@trigger_type=Manual; \
-	cron_args=""; \
-	if [ "$(ENV)" = "dev" ]; then \
-	  trigger_type=Schedule; \
-	  cron_args='--cron-expression "0 2 * * *"'; \
-	fi; \
+	@trigger_type=Schedule; \
+	cron_args='--cron-expression "0 1 * * 0"'; \
 	eval "az containerapp job create \
 	  --name $(JOB_NAME)-$(ENV) \
 	  --resource-group $(AZURE_ETL_RESOURCE_GROUP_NAME) \

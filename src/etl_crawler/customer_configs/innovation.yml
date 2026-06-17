@@ -35,3 +35,4 @@ feed:
   format: jsonlines
   encoding: utf-8
 jobdir: scripts/crawler/jobs/innovation
+extract_concurrency: 3

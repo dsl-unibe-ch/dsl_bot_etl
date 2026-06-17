@@ -36,3 +36,4 @@ feed:
   format: jsonlines
   encoding: utf-8
 jobdir: scripts/crawler/jobs/qse
+extract_concurrency: 3
