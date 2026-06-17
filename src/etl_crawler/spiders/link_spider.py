@@ -71,7 +71,7 @@ class LinkSpider(CrawlSpider):
     def _canon(self, url: str) -> str:
         return canonicalize_url(url, keep_fragments=False)
 
-    def start_requests(self):
+    async def start(self):
         for pdf_url in self.static_pdfs:
             canonical = self._canon(pdf_url)
             if canonical not in self._exported:
