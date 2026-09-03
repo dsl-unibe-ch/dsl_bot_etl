@@ -87,7 +87,7 @@ Each step exposes a `run(run_context: RunContext)` function that receives a shar
 <details>
 <summary>Click to expand</summary>
 
-- Python 3.12.11
+- Python 3.14.7
 - Azure CLI (`az login`) for downloading secrets from Azure Blob Storage
 
 </details>
@@ -100,13 +100,13 @@ Each step exposes a `run(run_context: RunContext)` function that receives a shar
 Install `uv`:
 
 ```bash
-pip install uv==0.8.14
+pip install uv==0.12.9
 ```
 
 Create virtual environment:
 
 ```bash
-uv venv .venv --python 3.12.11
+uv venv .venv --python 3.14.7
 ```
 
 Activate:

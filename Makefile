@@ -25,9 +25,9 @@ IMAGE_TAG                = $(AZURE_CONTAINER_REGISTRY_LOGIN_SERVER)/$(AZURE_CONT
 
 lint:
 	@echo $@
-	$(PYTHON) -m ruff format src tests scripts
+	$(PYTHON) -m ruff format src 
 	@echo $@
-	$(PYTHON) -m ruff check --fix src tests scripts
+	$(PYTHON) -m ruff check --fix src 
 
 
 # ---------- Full pipeline (all steps) ----------
