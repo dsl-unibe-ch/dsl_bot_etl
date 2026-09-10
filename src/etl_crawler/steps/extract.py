@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import sys
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urljoin, urlparse
@@ -17,11 +18,12 @@ import requests
 from bs4 import BeautifulSoup, NavigableString, Tag
 from playwright.async_api import (
     Page,
-    TimeoutError as PlaywrightTimeout,
     async_playwright,
 )
+from playwright.async_api import (
+    TimeoutError as PlaywrightTimeout,
+)
 
-#NoQA: F401 Used to prevent circular import of RunContext from pipeline.py during static type checking
 if TYPE_CHECKING:
     from src.etl_crawler.pipeline import RunContext
 
@@ -57,9 +59,13 @@ class ContentExtractor:
                 for element in elements:
                     try:
                         if await element.is_visible():
-                            tag_name = await element.evaluate("el => el.tagName.toLowerCase()")
+                            tag_name = await element.evaluate(
+                                "el => el.tagName.toLowerCase()"
+                            )
                             if tag_name == "details":
-                                await element.evaluate('el => el.setAttribute("open", "")')
+                                await element.evaluate(
+                                    'el => el.setAttribute("open", "")'
+                                )
                             else:
                                 await element.click(timeout=1000)
                             expanded_count += 1
@@ -90,7 +96,7 @@ class ContentExtractor:
             except Exception:
                 pass
 
-        for i, tab in enumerate(tabs):
+        for tab in tabs:
             try:
                 await tab.click(timeout=2000)
                 await asyncio.sleep(0.3)
@@ -106,19 +112,30 @@ class ContentExtractor:
                 pass
         return len(tabs)
 
-    def extract_text_content(self, soup: BeautifulSoup, base_url: str | None = None) -> str:
+    def extract_text_content(
+        self, soup: BeautifulSoup, base_url: str | None = None
+    ) -> str:
         """Extract text content from the page."""
         main_content = None
-        for selector in ["main", '[role="main"]', "article", ".content", "#content", "body"]:
+        for selector in [
+            "main",
+            '[role="main"]',
+            "article",
+            ".content",
+            "#content",
+            "body",
+        ]:
             main_content = soup.select_one(selector)
             if main_content:
                 break
         if not main_content:
-            main_content = soup.body if soup.body else soup
+            main_content = soup.body or soup
 
         for element in main_content.find_all(["script", "style", "noscript"]):
             element.decompose()
-        for element in main_content.find_all(style=lambda s: s and "display:none" in s.replace(" ", "")):
+        for element in main_content.find_all(
+            style=lambda s: s and "display:none" in s.replace(" ", "")
+        ):
             element.decompose()
         for element in main_content.find_all(attrs={"hidden": True}):
             element.decompose()
@@ -132,7 +149,13 @@ class ContentExtractor:
             result = result.replace("\n\n\n", "\n\n")
         return result.strip()
 
-    def _extract_text_recursive(self, element: Any, lines: list[str], level: int = 0, base_url: str | None = None) -> None:
+    def _extract_text_recursive(
+        self,
+        element: Any,
+        lines: list[str],
+        level: int = 0,
+        base_url: str | None = None,
+    ) -> None:
         """Extract text content from the element recursively."""
         if isinstance(element, NavigableString):
             text = str(element).strip()
@@ -196,23 +219,35 @@ class ContentExtractor:
             content = self.extract_text_content(soup, base_url=url)
             return {
                 "url": url,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "timestamp": datetime.now(UTC).isoformat(),
                 "content": content,
                 "success": True,
             }
         except PlaywrightTimeout as e:
             logger.error("Timeout processing %s: %s", url, e)
-            return {"url": url, "timestamp": datetime.now(timezone.utc).isoformat(), "error": str(e), "success": False}
+            return {
+                "url": url,
+                "timestamp": datetime.now(UTC).isoformat(),
+                "error": str(e),
+                "success": False,
+            }
         except Exception as e:
             logger.error("Error processing %s: %s", url, e)
-            return {"url": url, "timestamp": datetime.now(timezone.utc).isoformat(), "error": str(e), "success": False}
+            return {
+                "url": url,
+                "timestamp": datetime.now(UTC).isoformat(),
+                "error": str(e),
+                "success": False,
+            }
 
     def save_result(self, result: dict[str, Any], output_file: Path) -> None:
         """Save the result to the output file."""
         with output_file.open("a", encoding="utf-8") as f:
             f.write(json.dumps(result, ensure_ascii=False) + "\n")
 
-    async def process_urls(self, urls: list[str], output_file: Path, concurrency: int = 3) -> None:
+    async def process_urls(
+        self, urls: list[str], output_file: Path, concurrency: int = 3
+    ) -> None:
         """Process the URLs using up to *concurrency* parallel Playwright pages."""
         semaphore = asyncio.Semaphore(concurrency)
         write_lock = asyncio.Lock()
@@ -224,6 +259,7 @@ class ContentExtractor:
                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
             )
             try:
+
                 async def process_one(index: int, url: str) -> None:
                     async with semaphore:
                         page = await context.new_page()
@@ -234,7 +270,9 @@ class ContentExtractor:
                     async with write_lock:
                         self.save_result(result, output_file)
 
-                await asyncio.gather(*(process_one(i, url) for i, url in enumerate(urls, start=1)))
+                await asyncio.gather(
+                    *(process_one(i, url) for i, url in enumerate(urls, start=1))
+                )
             finally:
                 await browser.close()
 
@@ -247,7 +285,9 @@ class ContentExtractor:
 class PDFContentExtractor:
     """Download and extract text from PDFs."""
 
-    def __init__(self, customer_name: str, output_dir: Path, download_dir: Path | None = None) -> None:
+    def __init__(
+        self, customer_name: str, output_dir: Path, download_dir: Path | None = None
+    ) -> None:
         self.customer_name = customer_name
         self.output_dir = output_dir
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -257,7 +297,7 @@ class PDFContentExtractor:
     @staticmethod
     def is_url(path_str: str) -> bool:
         """Check if the path is a URL."""
-        return path_str.startswith("http://") or path_str.startswith("https://")
+        return path_str.startswith(("http://", "https://"))
 
     def download_pdf(self, url: str) -> Path | None:
         """Download the PDF from the URL."""
@@ -266,6 +306,7 @@ class PDFContentExtractor:
             filename = Path(parsed_url.path).name
             if not filename or not filename.endswith(".pdf"):
                 import hashlib
+
                 url_hash = hashlib.md5(url.encode()).hexdigest()[:8]  # noqa: S324
                 filename = f"downloaded_{url_hash}.pdf"
             local_path = self.download_dir / filename
@@ -293,7 +334,9 @@ class PDFContentExtractor:
                     pass
         return "\n\n".join(content_parts)
 
-    def process_pdf(self, pdf_path: Path, index: int, original_url: str | None = None) -> dict[str, Any]:
+    def process_pdf(
+        self, pdf_path: Path, index: int, original_url: str | None = None
+    ) -> dict[str, Any]:
         """Process the PDF and extract text content."""
         try:
             content = self.extract_text_from_pdf(pdf_path)
@@ -303,7 +346,7 @@ class PDFContentExtractor:
             return {
                 "url": original_url or str(pdf_path.absolute()),
                 "filename": pdf_path.name,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "timestamp": datetime.now(UTC).isoformat(),
                 "content": content,
                 "success": True,
             }
@@ -312,7 +355,7 @@ class PDFContentExtractor:
             return {
                 "url": original_url or str(pdf_path.absolute()),
                 "filename": pdf_path.name,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "timestamp": datetime.now(UTC).isoformat(),
                 "error": str(e),
                 "success": False,
             }
@@ -341,10 +384,8 @@ class PDFContentExtractor:
                         f.write(json.dumps(result, ensure_ascii=False) + "\n")
             finally:
                 if downloaded_file and downloaded_file.exists():
-                    try:
+                    with contextlib.suppress(Exception):
                         downloaded_file.unlink()
-                    except Exception:
-                        pass
 
 
 # ---------------------------------------------------------------------------
@@ -378,7 +419,9 @@ def run(run_context: RunContext) -> ExtractResult:
                 pdf_links.append(data["URL"])
 
     output_file = run_context.data_dir / f"{run_context.customer_name}_content.jsonl"
-    logger.info("Extracting content from %d URLs and %d PDFs", len(urls), len(pdf_links))
+    logger.info(
+        "Extracting content from %d URLs and %d PDFs", len(urls), len(pdf_links)
+    )
 
     # Scrapy/Twisted may have corrupted the event loop, so force a fresh one
     # before spawning the Playwright browser subprocess.
@@ -389,8 +432,12 @@ def run(run_context: RunContext) -> ExtractResult:
         asyncio.set_event_loop(loop)
         try:
             concurrency = run_context.customer_config.get("extract_concurrency", 3)
-            extractor = ContentExtractor(run_context.customer_name, run_context.data_dir)
-            loop.run_until_complete(extractor.process_urls(urls, output_file, concurrency=concurrency))
+            extractor = ContentExtractor(
+                run_context.customer_name, run_context.data_dir
+            )
+            loop.run_until_complete(
+                extractor.process_urls(urls, output_file, concurrency=concurrency)
+            )
         finally:
             loop.close()
 
@@ -407,6 +454,10 @@ def run(run_context: RunContext) -> ExtractResult:
         url_count=len(urls),
         pdf_count=len(pdf_links),
     )
-    logger.info("Extraction finished: %d URLs, %d PDFs -> %s",
-                result.url_count, result.pdf_count, result.content_jsonl_path)
+    logger.info(
+        "Extraction finished: %d URLs, %d PDFs -> %s",
+        result.url_count,
+        result.pdf_count,
+        result.content_jsonl_path,
+    )
     return result

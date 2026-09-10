@@ -14,7 +14,9 @@ logger = logging.getLogger(__name__)
 class ETLArtifactUploader:
     """Upload ETL output files to a blob container with run-scoped paths."""
 
-    def __init__(self, connection_string: str, container_name: str, run_prefix: str) -> None:
+    def __init__(
+        self, connection_string: str, container_name: str, run_prefix: str
+    ) -> None:
         self._container_name = container_name
         self._run_prefix = run_prefix.strip("/")
         self._service = BlobServiceClient.from_connection_string(connection_string)

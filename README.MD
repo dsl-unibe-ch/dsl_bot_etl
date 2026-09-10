@@ -1,6 +1,6 @@
-# Kioskbot ETL
+# DSL Bot ETL
 
-This repository contains the code for ETL pipeline of the Kioskbot Project that crawls customer websites, extracts content, enriches it with keywords and questions via Azure OpenAI, and indexes it into Azure AI Search as a scheduled job inside an Azure container.
+This repository contains the code for ETL pipeline of the DSL Bot Project that crawls customer websites, extracts content, enriches it with keywords and questions via Azure OpenAI, and indexes it into Azure AI Search as a scheduled job inside an Azure container.
 
 
 ## Architecture
@@ -55,7 +55,7 @@ The smoke tests results are viewable inside the logs. In the future, further eva
 src/etl_crawler/
 ├── config.py              # ETLSettings (bootstrap) + AppSettings (app secrets)
 ├── pipeline.py            # RunContext dataclass + run_pipeline() orchestrator
-├── __main__.py            # CLI: python -m src.etl_crawler run --customer quality
+├── __main__.py            # CLI: python -m src.etl_crawler run --customer bnf
 ├── spiders/
 │   └── link_spider.py     # Scrapy CrawlSpider — collects URLs and PDF links
 ├── steps/
@@ -141,13 +141,13 @@ There are three levels of environment variables in this project:
     | Variable | Description | Where to find it |
     |---|---|---|
     | `AZURE_STORAGE_ACCOUNT_PRIMARY_CONNECTION_STRING` | Connection string for the storage account holding secrets | Azure Portal → Global Resource Group Storage Account|
-    | `AZURE_CONTAINER_STORAGE_NAME` | Blob container for logs (`kioskbot-logs`) | Global Resource Group Storage Account Access Keys  |
-    | `AZURE_CONTAINER_STORAGE_SECRETS_NAME` | Blob container for secret files (`kioskbot-secrets`) | Global Resource Group Storage Account Access Keys |
-    | `AZURE_CONTAINER_STORAGE_ETL_FILES_NAME` | Blob container for ETL outputs and intermediate files (`kioskbot-etl-files`) | Global Resource Group Storage Account Access Keys |
-    | `CUSTOMER_NAME_LIST` | Space-separated customer names (`quality innovation`) | Matches YAML configs in `customer_configs/` |
+    | `AZURE_CONTAINER_STORAGE_NAME` | Blob container for logs (`dsl-bot-logs`) | Global Resource Group Storage Account Access Keys  |
+    | `AZURE_CONTAINER_STORAGE_SECRETS_NAME` | Blob container for secret files (`dsl-bot-secrets`) | Global Resource Group Storage Account Access Keys |
+    | `AZURE_CONTAINER_STORAGE_ETL_FILES_NAME` | Blob container for ETL outputs and intermediate files (`dsl-bot-etl-files`) | Global Resource Group Storage Account Access Keys |
+    | `CUSTOMER_NAME_LIST` | Space-separated customer names | Matches YAML configs in `customer_configs/` |
     | `AZURE_ETL_RESOURCE_GROUP_NAME` | Resource group for the ETL infrastructure | Azure Portal |
     | `AZURE_CONTAINER_REGISTRY_NAME` | Existing ACR name | Azure Portal → Container registries |
-    | `AZURE_CONTAINER_REGISTRY_LOGIN_SERVER` | ACR login server (e.g. `crkbglobal001.azurecr.io`) | Azure Portal → Container registries → Login server |
+    | `AZURE_CONTAINER_REGISTRY_LOGIN_SERVER` | ACR login server (e.g. `crdbglobal001.azurecr.io`) | Azure Portal → Container registries → Login server |
     | `AZURE_RESOURCE_GROUP_LOCATION` | Azure region (e.g. `switzerlandnorth`) | — |
     | `AZURE_CONTAINER_APP_ENV_NAME` | Container Apps Environment name | Chosen at provision time |
     | `WEBHOOK_URL` | *(Optional)* Microsoft Teams or Slack incoming webhook URL for pipeline notifications. Create one in Teams via **channel settings → Connectors → Incoming Webhook**, copy the URL, and paste it here. Leave empty to skip notifications. | Teams channel settings |
@@ -164,7 +164,7 @@ There are three levels of environment variables in this project:
     make copy-secrets-from-container ENV=prod
     ```
 
-The bootstrap script (`scripts/copy_secrets_from_container.py`) uses the connection string in `.env.etl` to authenticate with Azure Blob Storage, downloads the `.env.{ENV}` file from the `kioskbot-secrets` container, and saves it locally as `.env.{ENV}.app`.
+The bootstrap script (`scripts/copy_secrets_from_container.py`) uses the connection string in `.env.etl` to authenticate with Azure Blob Storage, downloads the `.env.{ENV}` file from the `dsl-bot-secrets` container, and saves it locally as `.env.{ENV}.app`.
 
 </details>
 
@@ -174,7 +174,7 @@ The bootstrap script (`scripts/copy_secrets_from_container.py`) uses the connect
 <summary>Full pipeline (all 4 steps)</summary>
 
 ```bash
-make pipeline customer_name=quality ENV=dev
+make pipeline customer_name={CUSTOMER_NAME} ENV=dev
 ```
 
 This runs: crawl -> extract -> post_process -> index for a given customer.
@@ -190,32 +190,32 @@ make pipeline-all-customers ENV=dev
 **Scrape** (crawl + extract):
 
 ```bash
-make scrape customer_name=quality ENV=dev
+make scrape customer_name={CUSTOMER_NAME} ENV=dev
 ```
 
-1. The Scrapy spider follows the rules defined in `src/etl_crawler/customer_configs/quality.yml`, collecting URLs and PDF links into `url_list.jsonl`
-2. Each URL is visited with Playwright (expanding accordions/tabs), and PDFs are downloaded and parsed. All content is written to `quality_content.jsonl`
+1. The Scrapy spider follows the rules defined in `src/etl_crawler/customer_configs/{CUSTOMER}.yml`, collecting URLs and PDF links into `url_list.jsonl`
+2. Each URL is visited with Playwright (expanding accordions/tabs), and PDFs are downloaded and parsed. All content is written to `{CUSTOMER}_content.jsonl`
 
 **Post-process only:**
 
 ```bash
-make post-process customer_name=quality ENV=dev
+make post-process customer_name=CUSTOMER_NAME ENV=dev
 ```
 
-Reads `quality_content.jsonl`, filters short/empty content, generates keywords and example questions via Azure OpenAI, and writes `processed_data.xlsx`.
+Reads `{CUSTOMER_NAME}_content.jsonl`, filters short/empty content, generates keywords and example questions via Azure OpenAI, and writes `processed_data.xlsx`.
 
 **Index only:**
 
 ```bash
-make index customer_name=quality ENV=dev
+make index customer_name={CUSTOMER_NAME} ENV=dev
 ```
 
-Reads `processed_data.xlsx`, chunks documents with `SemanticChunker`, generates embeddings and titles, creates the Azure AI Search index `kb-quality`, and uploads all chunks.
+Reads `processed_data.xlsx`, chunks documents with `SemanticChunker`, generates embeddings and titles, creates the Azure AI Search index `kb-{CUSTOMER_NAME}`, and uploads all chunks.
 
 **Post-process + index together:**
 
 ```bash
-make etl customer_name=quality ENV=dev
+make etl customer_name={CUSTOMER_NAME} ENV=dev
 ```
 
 </details>
@@ -225,17 +225,17 @@ make etl customer_name=quality ENV=dev
 <summary>Using the Python CLI directly</summary>
 
 ```bash
-PYTHONPATH=. python -m src.etl_crawler run --customer quality
-PYTHONPATH=. python -m src.etl_crawler run --customer quality --steps crawl,extract
-PYTHONPATH=. python -m src.etl_crawler run --customer quality --steps post_process,index
-PYTHONPATH=. python -m src.etl_crawler run --customer quality --data-dir data/quality/1234567890
+PYTHONPATH=. python -m src.etl_crawler run --customer {CUSTOMER_NAME}
+PYTHONPATH=. python -m src.etl_crawler run --customer {CUSTOMER_NAME} --steps crawl,extract
+PYTHONPATH=. python -m src.etl_crawler run --customer {CUSTOMER_NAME} --steps post_process,index
+PYTHONPATH=. python -m src.etl_crawler run --customer {CUSTOMER_NAME} --data-dir data/{CUSTOMER_NAME}/1234567890
 ```
 
 ### Notes
 
 - The crawler config per customer is in `src/etl_crawler/customer_configs/{customer_name}.yml`
 - Data artifacts are written to `data/{customer_name}/{timestamp}/` (gitignored)
-- Index naming convention: `kb-{customer_name}` (e.g. `kb-quality`, `kb-innovation`)
+- Index naming convention: `kb-{customer_name}` (e.g. `kb-{CUSTOMER_NAME}`, `kb-innovation`)
 - The pipeline does not handle scanned PDFs without a text layer
 
 </details>
@@ -264,20 +264,20 @@ These use `curl` against the search REST API. They read `AZURE_SEARCH_ENDPOINT` 
 **Sample documents (readable JSON)** — omits `text_vector` by default so output is not dominated by embeddings:
 
 ```bash
-make search-probe ENV=dev customer_name=quality
+make search-probe ENV=dev customer_name={CUSTOMER_NAME}
 ```
 
 Optional: change API version (`SEARCH_API_VERSION`) or which fields are returned (`SEARCH_PROBE_SELECT`, comma-separated). Examples:
 
 ```bash
-make search-probe ENV=dev customer_name=quality SEARCH_PROBE_SELECT='chunk_id,Link,Title,chunk'
-make search-probe ENV=dev customer_name=quality SEARCH_PROBE_SELECT='*'
+make search-probe ENV=dev customer_name={CUSTOMER_NAME} SEARCH_PROBE_SELECT='chunk_id,Link,Title,chunk'
+make search-probe ENV=dev customer_name={CUSTOMER_NAME} SEARCH_PROBE_SELECT='*'
 ```
 
 **Document count** — index statistics from the service:
 
 ```bash
-make search-count ENV=dev customer_name=quality
+make search-count ENV=dev customer_name={CUSTOMER_NAME}
 ```
 
 Prints `documentCount` and `storageSize`.
@@ -329,10 +329,10 @@ The ETL artifact container configured by `AZURE_CONTAINER_STORAGE_ETL_FILES_NAME
 
 Image and job naming are derived from `pyproject.toml`:
 
-- `PROJECT_NAME` = `name` (e.g. `kioskbot-etl`)
+- `PROJECT_NAME` = `name` (e.g. `dsl-bot-etl`)
 - `VERSION` = `version` (e.g. `0.1.0`)
-- Job names = sanitized and truncated `{PROJECT_NAME}-{VERSION}-dev|prod` (e.g. `kioskbot-etl-0-1-0-dev`)
-- Image tag = `{ACR_LOGIN_SERVER}/{PROJECT_NAME}:{VERSION}` (e.g. `crkbglobal001.azurecr.io/kioskbot-etl:0.1.0`)
+- Job names = sanitized and truncated `{PROJECT_NAME}-{VERSION}-dev|prod` (e.g. `dsl-bot-etl-0-1-0-dev`)
+- Image tag = `{ACR_LOGIN_SERVER}/{PROJECT_NAME}:{VERSION}` (e.g. `crdbglobal001.azurecr.io/dsl-bot-etl:0.1.0`)
 
 ### Deploy Container
 The container image needs to be present beforehand as this is needed during the provisioning of the job (not infra)
@@ -405,13 +405,13 @@ To be implemented
   1. Example query to get container level logs
     ```bash
     ContainerAppSystemLogs_CL
-  | where JobName_s == 'kioskbot-etl-0-1-1-dev'
+  | where JobName_s == 'dsl-bot-etl-0-1-1-dev'
     ```
   2. Example query to get app level ephemeral logs
     ```bash
     ContainerAppConsoleLogs_CL
   | where TimeGenerated between (datetime(2026-03-04T02:00:00Z) .. datetime(2026-03-04T06:50:00Z))
-  | where ContainerGroupName_s has "kioskbot-etl-0-1-1-dev"
+  | where ContainerGroupName_s has "dsl-bot-etl-0-1-1-dev"
   | project TimeGenerated, Log_s
   | order by TimeGenerated desc
     ```
@@ -427,7 +427,7 @@ To be implemented
    - `pipeline-all-customers`
    - `smoke-test`
    - `notify`
-3. Smoke tests validate indexes (`kb-quality`, `kb-innovation`)
+3. Smoke tests validate indexes (`kb-{CUSTOMER_NAME}`, `kb-innovation`)
 4. Webhook sends a status message to Teams/Slack
 
 To trigger manually at any time:
@@ -456,7 +456,7 @@ make trigger ENV=prod PROD_APPROVED=YES
 
 | Command | Description |
 |---|---|
-| `make docker-build-image` | Build local Docker image (`kioskbot-etl:{VERSION}`) |
+| `make docker-build-image` | Build local Docker image (`bot-etl:{VERSION}`) |
 | `make docker-push-image ACR_USERNAME="..." ACR_PASSWORD="..."` | Tag and push image to ACR |
 | `make provision-rg` | Create ETL resource group (idempotent) |
 | `make provision-infra` | Create Container Apps environment |

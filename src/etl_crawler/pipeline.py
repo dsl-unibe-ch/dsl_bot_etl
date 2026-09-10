@@ -5,11 +5,12 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
 import yaml
 
 from src.etl_crawler.blob_artifacts import ETLArtifactUploader
 from src.etl_crawler.config import AppSettings, ETLSettings
-from src.etl_crawler.steps import crawl, extract, post_process, index
+from src.etl_crawler.steps import crawl, extract, index, post_process
 
 logger = logging.getLogger(__name__)
 
@@ -116,8 +117,12 @@ def run_pipeline(
                 f"Unknown step '{step_name}'. Available: {list(STEP_REGISTRY)}"
             )
 
-    logger.info("Pipeline starting for customer=%s data_dir=%s steps=%s",
-                customer_name, data_dir, requested_steps)
+    logger.info(
+        "Pipeline starting for customer=%s data_dir=%s steps=%s",
+        customer_name,
+        data_dir,
+        requested_steps,
+    )
 
     for step_name in requested_steps:
         logger.info("Running step: %s", step_name)

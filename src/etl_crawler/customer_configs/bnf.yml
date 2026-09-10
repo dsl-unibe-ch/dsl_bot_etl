@@ -1,0 +1,32 @@
+seed_urls:
+  - https://www.bnf.unibe.ch
+  - https://www.bnf.unibe.ch/angebote/index_ger.html
+  - https://www.bnf.unibe.ch/beratung/index_ger.html
+  - https://www.bnf.unibe.ch/netzwerken/index_ger.html
+  - https://www.bnf.unibe.ch/ueber_uns/index_ger.html
+allowed_domains: [www.unibe.ch, lead.unibe.ch]
+allow:
+  - /fuer_stellensuchende_rav/
+  - /fuer_weitere_stellensuchende/
+  - /fuer_anmeldende_stellen/
+  - /zielgruppe/
+  - /beratungsangebot/
+  - /anmeldung/
+  - /projektpartnerschaften/
+  - /vorteile_eines_bnf_projekts/
+  - /projektbeispiele/
+  - /fuer_partnerorganisationen/
+  - /anmeldung_und_kosten/
+  - /qualitaet/
+  - /bnf_auf_einen_blick/
+  - /kontakt/
+  - /bnf_team/
+  - /publikationen/
+deny_domains:
+  - edit.cms.unibe.ch
+feed:
+  output: scripts/crawler/data/raw/bnf.jsonl
+  format: jsonlines
+  encoding: utf-8
+jobdir: scripts/crawler/jobs/bnf
+extract_concurrency: 3

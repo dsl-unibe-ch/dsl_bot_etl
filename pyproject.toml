@@ -39,9 +39,9 @@ dependencies = [
 tmp_path_retention_policy = "none"
 
 [tool.ruff.lint]
-select = ["ALL"]
+select = ["E4", "E7", "E9", "F", "I", "UP", "B", "SIM", "PIE"]
 ignore = [
-    "COM812", 
+    "E501",
 ]
 
 pydocstyle.convention = "google"
