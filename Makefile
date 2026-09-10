@@ -25,9 +25,9 @@ IMAGE_TAG                = $(AZURE_CONTAINER_REGISTRY_LOGIN_SERVER)/$(AZURE_CONT
 
 lint:
 	@echo $@
-	$(PYTHON) -m ruff format src tests scripts
+	$(PYTHON) -m ruff format src 
 	@echo $@
-	$(PYTHON) -m ruff check --fix src tests scripts
+	$(PYTHON) -m ruff check --fix src 
 
 
 # ---------- Full pipeline (all steps) ----------
@@ -98,13 +98,13 @@ smoke-test:
 
 # Query Azure AI Search directly (same index name as the pipeline: kb-<customer_name>).
 # Requires curl and a populated .env.$(ENV).app with AZURE_SEARCH_* vars.
-# Example: make search-probe ENV=dev customer_name=quality
+# Example: make search-probe ENV=dev customer_name=bnf
 # Default select omits text_vector (embedding) so output stays readable; override if needed.
 SEARCH_API_VERSION ?= 2023-11-01
 SEARCH_PROBE_SELECT ?= chunk_id,DocumentID,Link,Title,Title_Chunk,Category
 
 search-probe: require-env
-	@test -n "$(customer_name)" || (echo "Error: customer_name is required. Example: make search-probe ENV=dev customer_name=quality"; exit 1)
+	@test -n "$(customer_name)" || (echo "Error: customer_name is required. Example: make search-probe ENV=dev customer_name=bnf"; exit 1)
 	@_app_env=".env.$(ENV).app"; \
 	if [ ! -f "$$_app_env" ]; then echo "Error: missing $$_app_env"; exit 1; fi; \
 	ENDPOINT=$$(grep '^AZURE_SEARCH_ENDPOINT=' "$$_app_env" | cut -d= -f2- | tr -d '\r'); \
@@ -121,9 +121,9 @@ search-probe: require-env
 	  -d "{\"search\":\"*\",\"top\":5,\"count\":true,\"select\":\"$(SEARCH_PROBE_SELECT)\"}" | $(PYTHON) -m json.tool
 
 # GET index statistics (document count + storage size). Same index naming as the pipeline: kb-<customer_name>.
-# Example: make search-count ENV=dev customer_name=quality
+# Example: make search-count ENV=dev customer_name=bnf
 search-count: require-env
-	@test -n "$(customer_name)" || (echo "Error: customer_name is required. Example: make search-count ENV=dev customer_name=quality"; exit 1)
+	@test -n "$(customer_name)" || (echo "Error: customer_name is required. Example: make search-count ENV=dev customer_name=bnf"; exit 1)
 	@_app_env=".env.$(ENV).app"; \
 	if [ ! -f "$$_app_env" ]; then echo "Error: missing $$_app_env"; exit 1; fi; \
 	ENDPOINT=$$(grep '^AZURE_SEARCH_ENDPOINT=' "$$_app_env" | cut -d= -f2- | tr -d '\r'); \
@@ -233,8 +233,8 @@ provision-job: require-acr-creds require-image-in-acr require-env cleanup-old-en
 	  --env-vars \
 	    ENV=$(ENV) \
 	    AZURE_STORAGE_ACCOUNT_PRIMARY_CONNECTION_STRING=secretref:storage-conn-str \
-	    AZURE_CONTAINER_STORAGE_NAME=kioskbot-logs \
-	    AZURE_CONTAINER_STORAGE_SECRETS_NAME=kioskbot-secrets \
+	    AZURE_CONTAINER_STORAGE_NAME=dsl-bot-logs \
+	    AZURE_CONTAINER_STORAGE_SECRETS_NAME=dsl-bot-secrets \
 	    AZURE_CONTAINER_STORAGE_ETL_FILES_NAME="$(AZURE_CONTAINER_STORAGE_ETL_FILES_NAME)" \
 	    AZURE_ETL_RESOURCE_GROUP_NAME=\"$(AZURE_ETL_RESOURCE_GROUP_NAME)\" \
 	    AZURE_CONTAINER_REGISTRY_NAME=\"$(AZURE_CONTAINER_REGISTRY_NAME)\" \

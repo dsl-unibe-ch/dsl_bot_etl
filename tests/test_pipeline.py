@@ -13,7 +13,7 @@ from src.etl_crawler.pipeline import (
 
 class TestLoadCustomerConfig:
     def test_loads_existing_config(self):
-        config = load_customer_config("quality")
+        config = load_customer_config("bnf")
         assert "seed_urls" in config
         assert isinstance(config["seed_urls"], list)
 

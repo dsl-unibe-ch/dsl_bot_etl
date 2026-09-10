@@ -1,47 +1,47 @@
 [project]
-name = "kioskbot-etl"
-version = "0.1.4"
-description = "ETL for Kioskbot project"
+name = "dsl-bot-etl"
+version = "0.1.0"
+description = "ETL for DSL Bot-as-a-Service project"
 readme = "README.md"
-requires-python = "==3.12.11"
+requires-python = "==3.14.7"
 
 dependencies = [
-    "langchain==1.3.9",
-    "azure-search-documents==11.6.0",
-    "azure-identity==1.24.0",
-    "openai==2.31.0",
-    "langchain_core==1.3.3",
-    "dotenv==0.9.9",
-    "langchain_openai==1.1.14",
+    "langchain==1.3.18",
+    "azure-search-documents==12.0.0",
+    "azure-identity==1.25.3",
+    "openai==3.7.0",
+    "langchain_core==1.6.1",
+    "python-dotenv==1.2.3",
+    "langchain_openai==1.6.0",
     "ftfy==6.3.1",
-    "fastapi==0.116.1",
+    "fastapi==0.141.1",
     "azure-data-tables==12.7.0",
-    "uvicorn==0.35.0",
-    "pydantic_settings==2.10.1",
-    "pandas==2.3.2",
-    "azure-storage-blob==12.26.0",
-    "ruff==0.12.11",
-    "pre-commit==4.3.0",
-    "pytest==9.0.3",
-    "openevals==0.1.0",
-    "scrapy==2.16.0",
-    "beautifulsoup4==4.13.5",
-    "lxml==6.1.0",
-    "pytest-playwright==0.7.2",
-    "playwright==1.55.0",
+    "uvicorn==0.52.4",
+    "pydantic_settings==2.15.0",
+    "pandas==3.0.5",
+    "azure-storage-blob==12.30.1",
+    "ruff==0.16.5",
+    "pre-commit==4.6.2",
+    "pytest==9.1.1",
+    "openevals==0.2.0",
+    "scrapy==2.18.0",
+    "beautifulsoup4==4.15.0",
+    "lxml==6.1.2",
+    "pytest-playwright==0.9.0",
+    "playwright==1.62.0",
     "openpyxl==3.1.5",
     "langchain-experimental==0.4.1",
-    "locust==2.43.4",
-    "pdfplumber==0.11.9"
+    "locust==2.46.4",
+    "pdfplumber==0.11.10"
 ]
 
 [tool.pytest.ini_options]
 tmp_path_retention_policy = "none"
 
 [tool.ruff.lint]
-select = ["ALL"]
+select = ["E4", "E7", "E9", "F", "I", "UP", "B", "SIM", "PIE"]
 ignore = [
-    "COM812", 
+    "E501",
 ]
 
 pydocstyle.convention = "google"

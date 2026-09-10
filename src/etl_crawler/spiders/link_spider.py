@@ -32,7 +32,7 @@ class LinkSpider(CrawlSpider):
     """
 
     name = "link_spider"
-    #NoQA: S104 Intended as a class-level constant, shared by all instances
+
     custom_settings: ClassVar[dict[str, object]] = {
         "ROBOTSTXT_OBEY": True,
         "LOG_LEVEL": "INFO",

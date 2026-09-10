@@ -15,7 +15,6 @@ from openai import AzureOpenAI
 from pydantic import BaseModel
 from tqdm import tqdm
 
-#NoQA: F401 Used to prevent circular import of RunContext from pipeline.py during static type checking
 if TYPE_CHECKING:
     from src.etl_crawler.config import AppSettings
     from src.etl_crawler.pipeline import RunContext
@@ -67,7 +66,10 @@ def find_page_type(text: str) -> list[str]:
     """Find the page type of the text."""
     text_lower = text.lower()
     page_type: list[str] = []
-    if any(text_lower.count(kw) > 0 for kw in ("@unibe.ch", "kontakt", "zuständig", "ansprechpartner", "beratung")):
+    if any(
+        text_lower.count(kw) > 0
+        for kw in ("@unibe.ch", "kontakt", "zuständig", "ansprechpartner", "beratung")
+    ):
         page_type.append("contact/service")
     if any(text_lower.count(kw) > 0 for kw in ("pdf", "download", "formular")):
         page_type.append("forms/resources")
@@ -96,11 +98,17 @@ def post_process_data(
     valid_data = [r for r in all_data if r.get("content") and len(r["content"]) >= 10]
     filtered_count = len(all_data) - len(valid_data)
     if filtered_count:
-        logger.warning("Filtered out %d entries with empty/short content", filtered_count)
-    logger.info("Processing %d valid entries out of %d total", len(valid_data), len(all_data))
+        logger.warning(
+            "Filtered out %d entries with empty/short content", filtered_count
+        )
+    logger.info(
+        "Processing %d valid entries out of %d total", len(valid_data), len(all_data)
+    )
 
     processed_data: list[dict] = []
-    for idx, row in tqdm(enumerate(valid_data), total=len(valid_data), desc="Post-processing"):
+    for idx, row in tqdm(
+        enumerate(valid_data), total=len(valid_data), desc="Post-processing"
+    ):
         url = row.get("url", "None")
         text = row["content"]
 
@@ -115,27 +123,31 @@ def post_process_data(
             category = "Website"
 
         page_type = find_page_type(text)
-        prompt = KEYWORD_QUESTION_SYSTEM_PROMPT.format(url=url, page_type=page_type, text=text)
+        prompt = KEYWORD_QUESTION_SYSTEM_PROMPT.format(
+            url=url, page_type=page_type, text=text
+        )
         response = client.beta.chat.completions.parse(
             model=settings.AZURE_OPENAI_CHAT_DEPLOYMENT,
             messages=[{"role": "system", "content": prompt}],
             response_format=KeywordQuestionResponse,
         )
         parsed = response.choices[0].message.parsed
-        processed_data.append({
-            "DocumentID": f"{customer_name}_{idx}",
-            "Link": url,
-            "Title": title,
-            "Category": category,
-            "Local_Path": "Not Specified",
-            "Local_Path_PDF": "Not Specified",
-            "Date_Last_Modified": "Not Specified",
-            "Data_Gathered_On": row.get("timestamp", "Not Specified"),
-            "text": text,
-            "Keyword": ", ".join(parsed.keywords),
-            "Example_Questions": ", ".join(parsed.questions),
-            "page_type": page_type,
-        })
+        processed_data.append(
+            {
+                "DocumentID": f"{customer_name}_{idx}",
+                "Link": url,
+                "Title": title,
+                "Category": category,
+                "Local_Path": "Not Specified",
+                "Local_Path_PDF": "Not Specified",
+                "Date_Last_Modified": "Not Specified",
+                "Data_Gathered_On": row.get("timestamp", "Not Specified"),
+                "text": text,
+                "Keyword": ", ".join(parsed.keywords),
+                "Example_Questions": ", ".join(parsed.questions),
+                "page_type": page_type,
+            }
+        )
     return processed_data
 
 
@@ -149,7 +161,9 @@ def check_url_valid(url: str, timeout: int = 10) -> bool:
     try:
         response = requests.head(url, timeout=timeout, allow_redirects=True)
         if response.status_code == 405:
-            response = requests.get(url, timeout=timeout, allow_redirects=True, stream=True)
+            response = requests.get(
+                url, timeout=timeout, allow_redirects=True, stream=True
+            )
         return 200 <= response.status_code < 400
     except Exception:
         return False
@@ -192,7 +206,9 @@ def run(run_context: RunContext) -> PostProcessResult:
     if not jsonl_file.exists():
         raise FileNotFoundError(f"Content JSONL not found: {jsonl_file}")
 
-    all_data = post_process_data(jsonl_file, run_context.customer_name, run_context.app_settings)
+    all_data = post_process_data(
+        jsonl_file, run_context.customer_name, run_context.app_settings
+    )
 
     output_file = run_context.data_dir / "processed_data.xlsx"
     df = pd.DataFrame(all_data)

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import logging
-import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -36,7 +35,6 @@ from langchain_openai import AzureChatOpenAI
 from openai import AzureOpenAI
 from tqdm import tqdm
 
-#NoQA: F401 Used to prevent circular import of RunContext from pipeline.py during static type checking
 if TYPE_CHECKING:
     from src.etl_crawler.config import AppSettings
     from src.etl_crawler.pipeline import RunContext
@@ -57,8 +55,6 @@ INDEX_CREATE_RETRY_SECONDS = 5
 INDEX_COUNT_CHECK_ATTEMPTS = 20
 INDEX_COUNT_CHECK_SLEEP_SECONDS = 15
 INDEX_EXPORT_PAGE_SIZE = 1000
-
-
 
 
 def german2english(text: str, settings: AppSettings) -> str:
@@ -88,7 +84,8 @@ def german2english(text: str, settings: AppSettings) -> str:
     )
 
     translation_chain = translation_prompt | chat_client
-    return translation_chain.invoke({"input": text}).content # type: ignore
+    return translation_chain.invoke({"input": text}).content  # type: ignore
+
 
 class AzureEmbeddingWrapper:
     """Adapter so SemanticChunker can call our Azure embedding client."""
@@ -110,13 +107,17 @@ class AzureEmbeddingWrapper:
 
 def _generate_chunk_title(chunk: str, settings: AppSettings) -> str:
     """Generate a concise and informative title for a document chunk."""
-    prompt = ChatPromptTemplate.from_messages([
-        ("system",
-         "Given the following document chunk, generate a concise and informative "
-         "title that summarizes its main topic or purpose.\n\n"
-         "Document chunk: {input}\nThe title generated is: {{output}}"),
-        ("human", "{input}"),
-    ])
+    prompt = ChatPromptTemplate.from_messages(
+        [
+            (
+                "system",
+                "Given the following document chunk, generate a concise and informative "
+                "title that summarizes its main topic or purpose.\n\n"
+                "Document chunk: {input}\nThe title generated is: {{output}}",
+            ),
+            ("human", "{input}"),
+        ]
+    )
     chat = AzureChatOpenAI(
         azure_deployment=settings.AZURE_OPENAI_CHAT_DEPLOYMENT,
         api_version=settings.AZURE_OPENAI_CHAT_API_VERSION,
@@ -143,7 +144,12 @@ def _build_index_schema(index_name: str, settings: AppSettings) -> SearchIndex:
         algorithms=[
             HnswAlgorithmConfiguration(
                 name="myHnswAlgorithm",
-                parameters={"m": 4, "efConstruction": 400, "efSearch": 500, "metric": "cosine"},
+                parameters={
+                    "m": 4,
+                    "efConstruction": 400,
+                    "efSearch": 500,
+                    "metric": "cosine",
+                },
             )
         ],
         profiles=[
@@ -176,7 +182,9 @@ def _build_index_schema(index_name: str, settings: AppSettings) -> SearchIndex:
         SearchableField(name="Local_Path", type=SearchFieldDataType.String),
         SearchableField(name="Local_Path_PDF", type=SearchFieldDataType.String),
         SearchableField(name="Date_Last_Modified", type=SearchFieldDataType.String),
-        SearchableField(name="Data_Gathered_On", type=SearchFieldDataType.DateTimeOffset),
+        SearchableField(
+            name="Data_Gathered_On", type=SearchFieldDataType.DateTimeOffset
+        ),
         SearchableField(name="chunk", type=SearchFieldDataType.String),
         SearchableField(name="chunk_translated", type=SearchFieldDataType.String),
         SearchableField(name="Keyword", type=SearchFieldDataType.String),
@@ -239,14 +247,16 @@ def _generate_change_summary(
     old_links = {d["Link"] for d in old_documents}
     new_links = {d["Link"] for d in new_documents}
 
-    summary.update({
-        "status": "update",
-        "previous_run": str(previous_json_path.parent.name),
-        "old_chunk_count": len(old_documents),
-        "added_sources": sorted(new_links - old_links),
-        "removed_sources": sorted(old_links - new_links),
-        "unchanged_source_count": len(old_links & new_links),
-    })
+    summary.update(
+        {
+            "status": "update",
+            "previous_run": str(previous_json_path.parent.name),
+            "old_chunk_count": len(old_documents),
+            "added_sources": sorted(new_links - old_links),
+            "removed_sources": sorted(old_links - new_links),
+            "unchanged_source_count": len(old_links & new_links),
+        }
+    )
     return summary
 
 
@@ -353,7 +363,9 @@ def _backup_existing_index(
         AzureKeyCredential(settings.AZURE_SEARCH_SERVICE_PRIMARY_ADMIN_KEY),
     )
     output_dir.mkdir(parents=True, exist_ok=True)
-    backup_path = output_dir / f"{index_name}_backup_before_replace_{int(time.time())}.jsonl"
+    backup_path = (
+        output_dir / f"{index_name}_backup_before_replace_{int(time.time())}.jsonl"
+    )
 
     count = 0
     results = search_client.search(search_text="*", top=INDEX_EXPORT_PAGE_SIZE)
@@ -362,20 +374,25 @@ def _backup_existing_index(
             f.write(json.dumps(dict(result), ensure_ascii=False) + "\n")
             count += 1
 
-    logger.info("Backed up %d documents from '%s' to %s", count, index_name, backup_path)
+    logger.info(
+        "Backed up %d documents from '%s' to %s", count, index_name, backup_path
+    )
     return backup_path
 
 
-def run_etl(xlsx_path: Path, index_name: str, settings: AppSettings, output_dir: Path) -> dict:
+def run_etl(
+    xlsx_path: Path, index_name: str, settings: AppSettings, output_dir: Path
+) -> dict:
     """Core ETL: prepare documents, generate change summary, then replace the index."""
-
     embedding_client = AzureOpenAI(
         azure_endpoint=settings.AZURE_OPENAI_ENDPOINT,
         azure_deployment=settings.AZURE_OPENAI_SEARCH_EMBEDDING_DEPLOYMENT,
         api_version=settings.AZURE_OPENAI_SEARCH_EMBEDDING_API_VERSION,
         api_key=settings.AZURE_OPENAI_PRIMARY_KEY,
     )
-    wrapper = AzureEmbeddingWrapper(embedding_client, settings.AZURE_OPENAI_SEARCH_EMBEDDING_DEPLOYMENT)
+    wrapper = AzureEmbeddingWrapper(
+        embedding_client, settings.AZURE_OPENAI_SEARCH_EMBEDDING_DEPLOYMENT
+    )
     text_splitter = SemanticChunker(wrapper)
 
     # --- Phase 1: prepare all documents (slow, may fail) ---
@@ -384,7 +401,9 @@ def run_etl(xlsx_path: Path, index_name: str, settings: AppSettings, output_dir:
     chunk_id = 0
     logger.info("Processing %d rows from %s", len(df), xlsx_path.name)
 
-    for _, row in tqdm(df.iterrows(), total=len(df), desc="Processing rows to create chunks"):
+    for _, row in tqdm(
+        df.iterrows(), total=len(df), desc="Processing rows to create chunks"
+    ):
         chunks = text_splitter.create_documents([row["text"]])
         for chunk in chunks:
             content = chunk.page_content.strip()
@@ -396,23 +415,25 @@ def run_etl(xlsx_path: Path, index_name: str, settings: AppSettings, output_dir:
                 translated = german2english(content, settings)
             except Exception:
                 translated = "No translation generated"
-            documents.append({
-                "chunk_id": f"doc_{chunk_id}",
-                "DocumentID": row["DocumentID"],
-                "Link": row["Link"],
-                "Title": row["Title"],
-                "Title_Chunk": title_chunk,
-                "Category": row["Category"],
-                "Local_Path": row["Local_Path"],
-                "Local_Path_PDF": row["Local_Path_PDF"],
-                "Date_Last_Modified": row["Date_Last_Modified"],
-                "Data_Gathered_On": row["Data_Gathered_On"],
-                "chunk": content,
-                "chunk_translated": translated,
-                "Keyword": row["Keyword"],
-                "Example_Questions": row["Example_Questions"].split(","),
-                "text_vector": vector,
-            })
+            documents.append(
+                {
+                    "chunk_id": f"doc_{chunk_id}",
+                    "DocumentID": row["DocumentID"],
+                    "Link": row["Link"],
+                    "Title": row["Title"],
+                    "Title_Chunk": title_chunk,
+                    "Category": row["Category"],
+                    "Local_Path": row["Local_Path"],
+                    "Local_Path_PDF": row["Local_Path_PDF"],
+                    "Date_Last_Modified": row["Date_Last_Modified"],
+                    "Data_Gathered_On": row["Data_Gathered_On"],
+                    "chunk": content,
+                    "chunk_translated": translated,
+                    "Keyword": row["Keyword"],
+                    "Example_Questions": row["Example_Questions"].split(","),
+                    "text_vector": vector,
+                }
+            )
             chunk_id += 1
 
     logger.info("Prepared %d chunks. Saving local copy...", len(documents))
@@ -431,7 +452,10 @@ def run_etl(xlsx_path: Path, index_name: str, settings: AppSettings, output_dir:
         json.dump(change_summary, f, indent=2, ensure_ascii=False)
 
     if change_summary.get("status") == "first_run":
-        logger.info("First run — no previous index to compare against. %d new chunks.", len(documents))
+        logger.info(
+            "First run — no previous index to compare against. %d new chunks.",
+            len(documents),
+        )
     else:
         logger.info(
             "Change summary vs run %s: %d -> %d chunks, +%d sources, -%d sources, %d unchanged",
@@ -494,7 +518,7 @@ def run_etl(xlsx_path: Path, index_name: str, settings: AppSettings, output_dir:
         logger.info("Uploaded %d documents to '%s'", len(documents), index_name)
         for res in upload_result:
             logger.debug("  %s: %s", res.key, res.succeeded)
-    except (HttpResponseError, ValueError, TypeError):
+    except HttpResponseError, ValueError, TypeError:
         logger.exception("Error uploading documents")
         raise
 
@@ -518,11 +542,19 @@ def run(run_context: RunContext) -> IndexResult:
     """Build and populate the Azure AI Search index."""
     xlsx_path = run_context.data_dir / "processed_data.xlsx"
     if not xlsx_path.exists():
-        raise FileNotFoundError(f"processed_data.xlsx not found in {run_context.data_dir}")
+        raise FileNotFoundError(
+            f"processed_data.xlsx not found in {run_context.data_dir}"
+        )
 
     index_name = f"kb-{run_context.customer_name}"
-    summary = run_etl(xlsx_path, index_name, run_context.app_settings, run_context.data_dir)
+    summary = run_etl(
+        xlsx_path, index_name, run_context.app_settings, run_context.data_dir
+    )
 
-    result = IndexResult(index_name=summary["index_name"], chunk_count=summary["chunk_count"])
-    logger.info("Indexing finished: %s (%d chunks)", result.index_name, result.chunk_count)
+    result = IndexResult(
+        index_name=summary["index_name"], chunk_count=summary["chunk_count"]
+    )
+    logger.info(
+        "Indexing finished: %s (%d chunks)", result.index_name, result.chunk_count
+    )
     return result

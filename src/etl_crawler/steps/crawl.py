@@ -12,7 +12,6 @@ from scrapy.utils.project import get_project_settings
 
 from src.etl_crawler.spiders.link_spider import LinkSpider
 
-#NoQA: F401 Used to prevent circular import of RunContext from pipeline.py during static type checking
 if TYPE_CHECKING:
     from src.etl_crawler.pipeline import RunContext
 
@@ -29,24 +28,28 @@ def run(run_context: RunContext) -> CrawlResult:
     """Run the link spider for the customer, writing url_list.jsonl."""
     output_path = run_context.data_dir / "url_list.jsonl"
     config_path = (
-        Path(__file__).parent.parent / "customer_configs" / f"{run_context.customer_name}.yml"
+        Path(__file__).parent.parent
+        / "customer_configs"
+        / f"{run_context.customer_name}.yml"
     )
 
-    if not config_path.exists():    
+    if not config_path.exists():
         raise FileNotFoundError(f"Customer config not found: {config_path}")
 
     settings = get_project_settings()
-    settings.update({
-        "FEEDS": {
-            str(output_path): {
-                "format": "jsonlines",
-                "encoding": "utf-8",
-                "overwrite": True,
-            }
-        },
-        "JOBDIR": str(run_context.data_dir / "scrapy_job"),
-        "LOG_LEVEL": "INFO",
-    })
+    settings.update(
+        {
+            "FEEDS": {
+                str(output_path): {
+                    "format": "jsonlines",
+                    "encoding": "utf-8",
+                    "overwrite": True,
+                }
+            },
+            "JOBDIR": str(run_context.data_dir / "scrapy_job"),
+            "LOG_LEVEL": "INFO",
+        }
+    )
 
     process = CrawlerProcess(settings)
     process.crawl(LinkSpider, config=str(config_path))
@@ -57,5 +60,7 @@ def run(run_context: RunContext) -> CrawlResult:
         url_count = sum(1 for _ in output_path.open(encoding="utf-8"))
 
     result = CrawlResult(url_list_path=output_path, url_count=url_count)
-    logger.info("Crawl finished: %d items in %s", result.url_count, result.url_list_path)
+    logger.info(
+        "Crawl finished: %d items in %s", result.url_count, result.url_list_path
+    )
     return result

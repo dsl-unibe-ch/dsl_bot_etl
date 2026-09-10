@@ -1,4 +1,4 @@
-"""CLI entrypoint: ``python -m etl_crawler run --customer quality [--steps crawl,extract]``."""
+"""CLI entrypoint: ``python -m etl_crawler run --customer bnf [--steps crawl,extract]``."""
 
 import argparse
 import logging
