@@ -111,7 +111,7 @@ run-scheduled:
 smoke-test:
 	@PYTHONPATH=$(shell pwd) $(PYTHON) scripts/smoke_test.py --ENV $(ENV)
 
-# Query Azure AI Search directly (same index name as the pipeline: kb-<customer_name>).
+# Query Azure AI Search directly (same index name as the pipeline: index-<customer_name>).
 # Requires curl and a populated .env.$(ENV).app with AZURE_SEARCH_* vars.
 # Example: make search-probe ENV=dev customer_name=bnf
 # Default select omits text_vector (embedding) so output stays readable; override if needed.
@@ -127,7 +127,7 @@ search-probe: require-env
 	ENDPOINT=$$(echo "$$ENDPOINT" | sed 's/^[" ]*//;s/[" ]*$$//'); \
 	KEY=$$(echo "$$KEY" | sed 's/^[" ]*//;s/[" ]*$$//'); \
 	NORMALIZED=$${ENDPOINT%/}; \
-	INDEX_NAME="kb-$(customer_name)"; \
+	INDEX_NAME="index-$(customer_name)"; \
 	echo "Index: $$INDEX_NAME"; \
 	echo "POST $$NORMALIZED/indexes/$$INDEX_NAME/docs/search?api-version=$(SEARCH_API_VERSION)"; \
 	curl -sS -X POST "$$NORMALIZED/indexes/$$INDEX_NAME/docs/search?api-version=$(SEARCH_API_VERSION)" \
@@ -135,7 +135,7 @@ search-probe: require-env
 	  -H "api-key: $$KEY" \
 	  -d "{\"search\":\"*\",\"top\":5,\"count\":true,\"select\":\"$(SEARCH_PROBE_SELECT)\"}" | $(PYTHON) -m json.tool
 
-# GET index statistics (document count + storage size). Same index naming as the pipeline: kb-<customer_name>.
+# GET index statistics (document count + storage size). Same index naming as the pipeline: index-<customer_name>.
 # Example: make search-count ENV=dev customer_name=bnf
 search-count: require-env
 	@test -n "$(customer_name)" || (echo "Error: customer_name is required. Example: make search-count ENV=dev customer_name=bnf"; exit 1)
@@ -146,7 +146,7 @@ search-count: require-env
 	ENDPOINT=$$(echo "$$ENDPOINT" | sed 's/^[" ]*//;s/[" ]*$$//'); \
 	KEY=$$(echo "$$KEY" | sed 's/^[" ]*//;s/[" ]*$$//'); \
 	NORMALIZED=$${ENDPOINT%/}; \
-	INDEX_NAME="kb-$(customer_name)"; \
+	INDEX_NAME="index-$(customer_name)"; \
 	echo "Index: $$INDEX_NAME"; \
 	echo "GET $$NORMALIZED/indexes/$$INDEX_NAME/stats?api-version=$(SEARCH_API_VERSION)"; \
 	curl -sS -X GET "$$NORMALIZED/indexes/$$INDEX_NAME/stats?api-version=$(SEARCH_API_VERSION)" \

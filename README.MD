@@ -224,7 +224,7 @@ Reads `{CUSTOMER_NAME}_content.jsonl`, filters short/empty content, generates ke
 make index customer_name={CUSTOMER_NAME} ENV=dev data_dir=data/{CUSTOMER_NAME}/{timestamp}
 ```
 
-Reads `processed_data.xlsx`, chunks documents with `SemanticChunker`, generates embeddings and titles, creates the Azure AI Search index `kb-{CUSTOMER_NAME}`, and uploads all chunks.
+Reads `processed_data.xlsx`, chunks documents with `SemanticChunker`, generates embeddings and titles, creates the Azure AI Search index `index-{CUSTOMER_NAME}`, and uploads all chunks.
 
 **Post-process + index together:**
 
@@ -274,7 +274,7 @@ make test-quick
 
 ### Azure AI Search index checks (manual)
 
-These use `curl` against the search REST API. They read `AZURE_SEARCH_ENDPOINT` and `AZURE_SEARCH_SERVICE_PRIMARY_ADMIN_KEY` from `.env.<ENV>.app` (e.g. `.env.dev.app`) and target the same index name as the pipeline: `kb-<customer_name>`. Use a POSIX shell (e.g. Git Bash on Windows) so `grep`, `curl`, and `make` recipes behave as written.
+These use `curl` against the search REST API. They read `AZURE_SEARCH_ENDPOINT` and `AZURE_SEARCH_SERVICE_PRIMARY_ADMIN_KEY` from `.env.<ENV>.app` (e.g. `.env.dev.app`) and target the same index name as the pipeline: `index-<customer_name>`. Use a POSIX shell (e.g. Git Bash on Windows) so `grep`, `curl`, and `make` recipes behave as written.
 
 **Sample documents (readable JSON)** — omits `text_vector` by default so output is not dominated by embeddings:
 
@@ -443,7 +443,7 @@ To be implemented
    - `pipeline-all-customers`
    - `smoke-test`
    - `notify`
-3. Smoke tests validate indexes (`kb-{CUSTOMER_NAME}`, `db-bnf`)
+3. Smoke tests validate indexes (`index-{CUSTOMER_NAME}`, `db-bnf`)
 4. Webhook sends a status message to Teams/Slack
 
 To trigger manually at any time:
@@ -463,7 +463,7 @@ make trigger ENV=prod PROD_APPROVED=YES
 - Timeout: `--replica-timeout 28800` (8 hours)
 - Retry: `--replica-retry-limit 1` (required by current Azure CLI for job creation)
 - Resources: `--cpu 2 --memory 4Gi` (valid Consumption pairing)
-- ACR: existing registry (`crkbglobal001`), no ACR provisioning target
+- ACR: existing registry (`crdbglobal001`), no ACR provisioning target
 - Secrets strategy: Storage connection string is read from `.env.etl`; ACR credentials are passed at runtime as `ACR_USERNAME` and `ACR_PASSWORD` when creating jobs
 - Logging: `provision-infra` uses `--logs-destination none`, so it does not create or incur charges for a Log Analytics workspace. Persistent Container Apps logs and KQL queries are therefore unavailable unless a logging destination is configured later.
 

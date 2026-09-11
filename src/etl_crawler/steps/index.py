@@ -553,7 +553,7 @@ def run(run_context: RunContext) -> IndexResult:
             f"processed_data.xlsx not found in {run_context.data_dir}"
         )
 
-    index_name = f"kb-{run_context.customer_name}"
+    index_name = f"db-{run_context.customer_name}"
     summary = run_etl(
         xlsx_path, index_name, run_context.app_settings, run_context.data_dir
     )
