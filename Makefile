@@ -29,6 +29,10 @@ lint:
 	@echo $@
 	$(PYTHON) -m ruff check --fix src 
 
+playwright-install:
+	@echo $@
+	$(PYTHON) -m playwright install chromium
+
 
 # ---------- Full pipeline (all steps) ----------
 
@@ -46,26 +50,29 @@ pipeline:
 
 
 # ---------- Individual step groups ----------
+# Each target is a separate process invocation; without data_dir it creates a
+# NEW data/{customer_name}/{timestamp}/ dir, so outputs from a prior step won't
+# be found. Pass data_dir=data/{customer_name}/{timestamp} to resume a run.
 
 scrape:
 	@echo $@
 	@ENV=$(ENV) PYTHONPATH=$(shell pwd) $(PYTHON) -m src.etl_crawler run \
-		--customer $(customer_name) --steps crawl,extract
+		--customer $(customer_name) --steps crawl,extract $(if $(data_dir),--data-dir $(data_dir),)
 
 post-process:
 	@echo $@
 	@ENV=$(ENV) PYTHONPATH=$(shell pwd) $(PYTHON) -m src.etl_crawler run \
-		--customer $(customer_name) --steps post_process
+		--customer $(customer_name) --steps post_process $(if $(data_dir),--data-dir $(data_dir),)
 
 index:
 	@echo $@
 	@ENV=$(ENV) PYTHONPATH=$(shell pwd) $(PYTHON) -m src.etl_crawler run \
-		--customer $(customer_name) --steps index
+		--customer $(customer_name) --steps index $(if $(data_dir),--data-dir $(data_dir),)
 
 etl:
 	@echo $@
 	@ENV=$(ENV) PYTHONPATH=$(shell pwd) $(PYTHON) -m src.etl_crawler run \
-		--customer $(customer_name) --steps post_process,index
+		--customer $(customer_name) --steps post_process,index $(if $(data_dir),--data-dir $(data_dir),)
 
 
 # ---------- Tests ----------
@@ -83,6 +90,14 @@ test-quick:
 
 copy-secrets-from-container:
 	@PYTHONPATH=$(shell pwd) $(PYTHON) scripts/copy_secrets_from_container.py --ENV $(ENV)
+
+# Read-only check of why the storage account rejects requests (auth vs. network).
+storage-diagnose:
+	@account=$$(echo "$(STORAGE_CONN_STR)" | sed -n 's/.*AccountName=\([^;]*\).*/\1/p'); \
+	echo "Storage account: $$account"; \
+	az storage account show --name "$$account" \
+	  --query "{resourceGroup:resourceGroup,location:location,allowSharedKeyAccess:allowSharedKeyAccess,publicNetworkAccess:publicNetworkAccess,defaultAction:networkRuleSet.defaultAction,ipRules:networkRuleSet.ipRules}" \
+	  -o json
 
 
 # ---------- Container entrypoint (runs inside Docker) ----------
@@ -177,7 +192,8 @@ provision-infra:
 	az containerapp env create \
 	  --name $(AZURE_CONTAINER_APP_ENV_NAME) \
 	  --resource-group $(AZURE_ETL_RESOURCE_GROUP_NAME) \
-	  --location $(AZURE_RESOURCE_GROUP_LOCATION)
+	  --location $(AZURE_RESOURCE_GROUP_LOCATION) \
+	  --logs-destination none
 
 cleanup-old-env-jobs: require-env
 	@current_job="$(JOB_NAME)-$(ENV)"; \
@@ -342,3 +358,22 @@ destroy-infra: require-destroy-confirm
 	  --name $(AZURE_CONTAINER_APP_ENV_NAME) \
 	  --resource-group $(AZURE_ETL_RESOURCE_GROUP_NAME) \
 	  --yes
+
+# Resource providers used by the terraform modules; required once per subscription.
+AZ_REQUIRED_PROVIDERS := Microsoft.Resources Microsoft.Storage Microsoft.ContainerRegistry \
+	Microsoft.KeyVault Microsoft.ContainerService Microsoft.CognitiveServices \
+	Microsoft.Search Microsoft.ApiManagement Microsoft.Network Microsoft.Authorization \
+	Microsoft.OperationalInsights
+
+az-register-providers:
+	@echo "Registering required resource providers on the current subscription..."
+	@for provider in $(AZ_REQUIRED_PROVIDERS); do \
+		state=$$(az provider show -n $$provider --query registrationState -o tsv 2>/dev/null); \
+		if [ "$$state" = "Registered" ]; then \
+			echo "$$provider already registered"; \
+		else \
+			echo "Registering $$provider..."; \
+			az provider register -n $$provider --wait; \
+		fi; \
+	done
+	@echo "All required resource providers are registered."

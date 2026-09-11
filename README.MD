@@ -121,6 +121,12 @@ Install dependencies:
 uv pip install -r pyproject.toml
 ```
 
+Download the Playwright browser binary used by the extract step (required once per machine; a fresh `uv` venv or a Playwright version bump does not include it):
+
+```bash
+make playwright-install
+```
+
 Install pre-commit hooks:
 
 ```bash
@@ -187,6 +193,14 @@ make pipeline-all-customers ENV=dev
 
 ### Individual step groups
 
+Each command below is a **separate process invocation**. Without `data_dir`, it creates a new `data/{CUSTOMER_NAME}/{timestamp}/` directory, so it will not see files written by a previous step run in a different invocation (e.g. `post-process` right after `scrape` will fail with `Content JSONL not found`). To chain steps across separate commands, pass the same `data_dir` used by the prior step:
+
+```bash
+make scrape customer_name={CUSTOMER_NAME} ENV=dev
+# note the printed data dir, e.g. data/{CUSTOMER_NAME}/{TIMESTAMP}
+make post-process customer_name={CUSTOMER_NAME} ENV=dev data_dir=data/{CUSTOMER_NAME}/{TIMESTAMP}
+```
+
 **Scrape** (crawl + extract):
 
 ```bash
@@ -199,7 +213,7 @@ make scrape customer_name={CUSTOMER_NAME} ENV=dev
 **Post-process only:**
 
 ```bash
-make post-process customer_name=CUSTOMER_NAME ENV=dev
+make post-process customer_name=CUSTOMER_NAME ENV=dev data_dir=data/{CUSTOMER_NAME}/{timestamp}
 ```
 
 Reads `{CUSTOMER_NAME}_content.jsonl`, filters short/empty content, generates keywords and example questions via Azure OpenAI, and writes `processed_data.xlsx`.
@@ -207,7 +221,7 @@ Reads `{CUSTOMER_NAME}_content.jsonl`, filters short/empty content, generates ke
 **Index only:**
 
 ```bash
-make index customer_name={CUSTOMER_NAME} ENV=dev
+make index customer_name={CUSTOMER_NAME} ENV=dev data_dir=data/{CUSTOMER_NAME}/{timestamp}
 ```
 
 Reads `processed_data.xlsx`, chunks documents with `SemanticChunker`, generates embeddings and titles, creates the Azure AI Search index `kb-{CUSTOMER_NAME}`, and uploads all chunks.
@@ -215,10 +229,11 @@ Reads `processed_data.xlsx`, chunks documents with `SemanticChunker`, generates 
 **Post-process + index together:**
 
 ```bash
-make etl customer_name={CUSTOMER_NAME} ENV=dev
+make etl customer_name={CUSTOMER_NAME} ENV=dev data_dir=data/{CUSTOMER_NAME}/{timestamp}
 ```
 
 </details>
+
 
 
 <details>
@@ -235,7 +250,7 @@ PYTHONPATH=. python -m src.etl_crawler run --customer {CUSTOMER_NAME} --data-dir
 
 - The crawler config per customer is in `src/etl_crawler/customer_configs/{customer_name}.yml`
 - Data artifacts are written to `data/{customer_name}/{timestamp}/` (gitignored)
-- Index naming convention: `kb-{customer_name}` (e.g. `kb-{CUSTOMER_NAME}`, `kb-innovation`)
+- Index naming convention: `db-{customer_name}` (e.g. `db-{CUSTOMER_NAME}`, `db-bnf`)
 - The pipeline does not handle scanned PDFs without a text layer
 
 </details>
@@ -356,6 +371,7 @@ make docker-push-image ACR_USERNAME="<acr-user>" ACR_PASSWORD="<acr-password>"
 3. Provision the resource group and the container group (once only):
 
   ```bash
+  make az-register-providers
   make provision-rg
   make provision-infra
   ```
@@ -427,7 +443,7 @@ To be implemented
    - `pipeline-all-customers`
    - `smoke-test`
    - `notify`
-3. Smoke tests validate indexes (`kb-{CUSTOMER_NAME}`, `kb-innovation`)
+3. Smoke tests validate indexes (`kb-{CUSTOMER_NAME}`, `db-bnf`)
 4. Webhook sends a status message to Teams/Slack
 
 To trigger manually at any time:
@@ -449,7 +465,7 @@ make trigger ENV=prod PROD_APPROVED=YES
 - Resources: `--cpu 2 --memory 4Gi` (valid Consumption pairing)
 - ACR: existing registry (`crkbglobal001`), no ACR provisioning target
 - Secrets strategy: Storage connection string is read from `.env.etl`; ACR credentials are passed at runtime as `ACR_USERNAME` and `ACR_PASSWORD` when creating jobs
-- Logging: `provision-infra` creates the Container Apps environment without a dedicated Log Analytics workspace in `.env.etl`; Azure associates platform logging with the environment as configured in Azure (see Portal / CLI docs for your subscription).
+- Logging: `provision-infra` uses `--logs-destination none`, so it does not create or incur charges for a Log Analytics workspace. Persistent Container Apps logs and KQL queries are therefore unavailable unless a logging destination is configured later.
 
 
 ### Useful commands
@@ -458,6 +474,7 @@ make trigger ENV=prod PROD_APPROVED=YES
 |---|---|
 | `make docker-build-image` | Build local Docker image (`bot-etl:{VERSION}`) |
 | `make docker-push-image ACR_USERNAME="..." ACR_PASSWORD="..."` | Tag and push image to ACR |
+| `make az-register-providers` | Register the providers when provisioning for the first time
 | `make provision-rg` | Create ETL resource group (idempotent) |
 | `make provision-infra` | Create Container Apps environment |
 | `make provision-dev ACR_USERNAME="..." ACR_PASSWORD="..."` | Create/update dev job (requires ACR credentials) |

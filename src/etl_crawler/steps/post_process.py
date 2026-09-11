@@ -88,6 +88,8 @@ def post_process_data(
         azure_endpoint=settings.AZURE_OPENAI_ENDPOINT,
         api_key=settings.AZURE_OPENAI_PRIMARY_KEY,
         api_version=settings.AZURE_OPENAI_CHAT_API_VERSION,
+        timeout=60.0,
+        max_retries=3,
     )
 
     all_data: list[dict] = []

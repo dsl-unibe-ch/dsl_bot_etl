@@ -79,28 +79,22 @@ def run_pipeline(
     etl_settings = ETLSettings()
     app_settings = AppSettings()
     env_label = app_settings.ENV or "dev"
-    artifact_uploader: ETLArtifactUploader | None = None
+    if not etl_settings.AZURE_STORAGE_ACCOUNT_PRIMARY_CONNECTION_STRING:
+        raise ValueError("AZURE_STORAGE_ACCOUNT_PRIMARY_CONNECTION_STRING is required")
+    if not etl_settings.AZURE_CONTAINER_STORAGE_ETL_FILES_NAME:
+        raise ValueError("AZURE_CONTAINER_STORAGE_ETL_FILES_NAME is required")
 
-    if (
-        etl_settings.AZURE_STORAGE_ACCOUNT_PRIMARY_CONNECTION_STRING
-        and etl_settings.AZURE_CONTAINER_STORAGE_ETL_FILES_NAME
-    ):
-        run_prefix = f"{env_label}/{customer_name}/{data_dir.name}"
-        artifact_uploader = ETLArtifactUploader(
-            connection_string=etl_settings.AZURE_STORAGE_ACCOUNT_PRIMARY_CONNECTION_STRING,
-            container_name=etl_settings.AZURE_CONTAINER_STORAGE_ETL_FILES_NAME,
-            run_prefix=run_prefix,
-        )
-        logger.info(
-            "Artifact uploads enabled: container=%s run_prefix=%s",
-            etl_settings.AZURE_CONTAINER_STORAGE_ETL_FILES_NAME,
-            run_prefix,
-        )
-    else:
-        logger.warning(
-            "Artifact uploads disabled. Missing AZURE_STORAGE_ACCOUNT_PRIMARY_CONNECTION_STRING "
-            "or AZURE_CONTAINER_STORAGE_ETL_FILES_NAME."
-        )
+    run_prefix = f"{env_label}/{customer_name}/{data_dir.name}"
+    artifact_uploader = ETLArtifactUploader(
+        connection_string=etl_settings.AZURE_STORAGE_ACCOUNT_PRIMARY_CONNECTION_STRING,
+        container_name=etl_settings.AZURE_CONTAINER_STORAGE_ETL_FILES_NAME,
+        run_prefix=run_prefix,
+    )
+    logger.info(
+        "Artifact uploads enabled: container=%s run_prefix=%s",
+        etl_settings.AZURE_CONTAINER_STORAGE_ETL_FILES_NAME,
+        run_prefix,
+    )
 
     run_context = RunContext(
         customer_name=customer_name,
@@ -127,8 +121,7 @@ def run_pipeline(
     for step_name in requested_steps:
         logger.info("Running step: %s", step_name)
         STEP_REGISTRY[step_name](run_context)
-        if artifact_uploader:
-            artifact_uploader.sync_run_outputs(run_context.data_dir)
+        artifact_uploader.sync_run_outputs(run_context.data_dir)
         logger.info("Completed step: %s", step_name)
 
     logger.info("Pipeline finished.")
