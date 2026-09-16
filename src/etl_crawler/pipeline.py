@@ -10,7 +10,7 @@ import yaml
 
 from src.etl_crawler.blob_artifacts import ETLArtifactUploader
 from src.etl_crawler.config import AppSettings, ETLSettings
-from src.etl_crawler.steps import crawl, extract, index, post_process
+from src.etl_crawler.steps import crawl, extract, index, local_docs, post_process
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +19,7 @@ CUSTOMER_CONFIGS_DIR = Path(__file__).parent / "customer_configs"
 STEP_REGISTRY: dict[str, Any] = {
     "crawl": crawl.run,
     "extract": extract.run,
+    "local_docs": local_docs.run,
     "post_process": post_process.run,
     "index": index.run,
 }

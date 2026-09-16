@@ -59,6 +59,11 @@ scrape:
 	@ENV=$(ENV) PYTHONPATH=$(shell pwd) $(PYTHON) -m src.etl_crawler run \
 		--customer $(customer_name) --steps crawl,extract $(if $(data_dir),--data-dir $(data_dir),)
 
+local-docs:
+	@echo $@
+	@ENV=$(ENV) PYTHONPATH=$(shell pwd) $(PYTHON) -m src.etl_crawler run \
+		--customer $(customer_name) --steps local_docs $(if $(data_dir),--data-dir $(data_dir),)
+
 post-process:
 	@echo $@
 	@ENV=$(ENV) PYTHONPATH=$(shell pwd) $(PYTHON) -m src.etl_crawler run \
@@ -111,12 +116,13 @@ run-scheduled:
 smoke-test:
 	@PYTHONPATH=$(shell pwd) $(PYTHON) scripts/smoke_test.py --ENV $(ENV)
 
-# Query Azure AI Search directly (same index name as the pipeline: index-<customer_name>).
+# Query Azure AI Search directly (same index name as the pipeline: index_<customer_name>).
 # Requires curl and a populated .env.$(ENV).app with AZURE_SEARCH_* vars.
-# Example: make search-probe ENV=dev customer_name=bnf
+# Example: make search-probe ENV=dev customer_name=bnf query="stipendium"
 # Default select omits text_vector (embedding) so output stays readable; override if needed.
 SEARCH_API_VERSION ?= 2023-11-01
 SEARCH_PROBE_SELECT ?= chunk_id,DocumentID,Link,Title,Title_Chunk,Category
+query ?= *
 
 search-probe: require-env
 	@test -n "$(customer_name)" || (echo "Error: customer_name is required. Example: make search-probe ENV=dev customer_name=bnf"; exit 1)
@@ -127,15 +133,16 @@ search-probe: require-env
 	ENDPOINT=$$(echo "$$ENDPOINT" | sed 's/^[" ]*//;s/[" ]*$$//'); \
 	KEY=$$(echo "$$KEY" | sed 's/^[" ]*//;s/[" ]*$$//'); \
 	NORMALIZED=$${ENDPOINT%/}; \
-	INDEX_NAME="index-$(customer_name)"; \
+	INDEX_NAME="index_$(customer_name)"; \
 	echo "Index: $$INDEX_NAME"; \
+	echo "Query: $(query)"; \
 	echo "POST $$NORMALIZED/indexes/$$INDEX_NAME/docs/search?api-version=$(SEARCH_API_VERSION)"; \
 	curl -sS -X POST "$$NORMALIZED/indexes/$$INDEX_NAME/docs/search?api-version=$(SEARCH_API_VERSION)" \
 	  -H "Content-Type: application/json" \
 	  -H "api-key: $$KEY" \
-	  -d "{\"search\":\"*\",\"top\":5,\"count\":true,\"select\":\"$(SEARCH_PROBE_SELECT)\"}" | $(PYTHON) -m json.tool
+	  -d "{\"search\":\"$(query)\",\"top\":5,\"count\":true,\"select\":\"$(SEARCH_PROBE_SELECT)\"}" | $(PYTHON) -m json.tool
 
-# GET index statistics (document count + storage size). Same index naming as the pipeline: index-<customer_name>.
+# GET index statistics (document count + storage size). Same index naming as the pipeline: index_<customer_name>.
 # Example: make search-count ENV=dev customer_name=bnf
 search-count: require-env
 	@test -n "$(customer_name)" || (echo "Error: customer_name is required. Example: make search-count ENV=dev customer_name=bnf"; exit 1)
@@ -146,7 +153,7 @@ search-count: require-env
 	ENDPOINT=$$(echo "$$ENDPOINT" | sed 's/^[" ]*//;s/[" ]*$$//'); \
 	KEY=$$(echo "$$KEY" | sed 's/^[" ]*//;s/[" ]*$$//'); \
 	NORMALIZED=$${ENDPOINT%/}; \
-	INDEX_NAME="index-$(customer_name)"; \
+	INDEX_NAME="index_$(customer_name)"; \
 	echo "Index: $$INDEX_NAME"; \
 	echo "GET $$NORMALIZED/indexes/$$INDEX_NAME/stats?api-version=$(SEARCH_API_VERSION)"; \
 	curl -sS -X GET "$$NORMALIZED/indexes/$$INDEX_NAME/stats?api-version=$(SEARCH_API_VERSION)" \

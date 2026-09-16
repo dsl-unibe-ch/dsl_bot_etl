@@ -344,7 +344,7 @@ class PDFContentExtractor:
                 content = content.replace("\n\n\n", "\n\n")
             content = content.strip()
             return {
-                "url": original_url or str(pdf_path.absolute()),
+                "url": original_url or str(pdf_path),
                 "filename": pdf_path.name,
                 "timestamp": datetime.now(UTC).isoformat(),
                 "content": content,
@@ -353,7 +353,7 @@ class PDFContentExtractor:
         except Exception as e:
             logger.error("Error processing %s: %s", pdf_path.name, e)
             return {
-                "url": original_url or str(pdf_path.absolute()),
+                "url": original_url or str(pdf_path),
                 "filename": pdf_path.name,
                 "timestamp": datetime.now(UTC).isoformat(),
                 "error": str(e),

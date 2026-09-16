@@ -117,6 +117,9 @@ def post_process_data(
         if url.endswith(".pdf"):
             title = row.get("filename", "Untitled")
             category = "PDF"
+        elif url.endswith(".txt"):
+            title = row.get("filename", "Untitled")
+            category = "Text"
         elif url == "None":
             title = "Untitled"
             category = "Other"

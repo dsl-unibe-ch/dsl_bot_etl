@@ -20,9 +20,10 @@ flowchart TD
   subgraph etlPipeline [Pipeline Stages]
     Crawl["1 crawl"]
     Extract["2 extract"]
-    PostProcess["3 post process"]
-    Index["4 create index"]
-    Crawl --> Extract --> PostProcess --> Index
+    LocalDocs["3 local docs (optional)"]
+    PostProcess["4 post process"]
+    Index["5 create index"]
+    Crawl --> Extract --> LocalDocs --> PostProcess --> Index
   end
 
   Pipeline --> Crawl
@@ -61,8 +62,9 @@ src/etl_crawler/
 ├── steps/
 │   ├── crawl.py           # Step 1: run spider → url_list.jsonl
 │   ├── extract.py         # Step 2: URL + PDF extraction → content.jsonl
-│   ├── post_process.py    # Step 3: enrich via Azure OpenAI → processed_data.xlsx
-│   └── index.py           # Step 4: build Azure AI Search index
+│   ├── local_docs.py      # Step 3 (optional): ingest local PDFs/text files → content.jsonl
+│   ├── post_process.py    # Step 4: enrich via Azure OpenAI → processed_data.xlsx
+│   └── index.py           # Step 5: build Azure AI Search index
 ├── customer_configs/      # Per-customer crawl rules (YAML)
 │   ├── quality.yml
 │   └── innovation.yml
@@ -183,7 +185,7 @@ The bootstrap script (`scripts/copy_secrets_from_container.py`) uses the connect
 make pipeline customer_name={CUSTOMER_NAME} ENV=dev
 ```
 
-This runs: crawl -> extract -> post_process -> index for a given customer.
+This runs: crawl -> extract -> local_docs -> post_process -> index for a given customer.
 
 To run the full pipeline for all customers, use
 
@@ -210,6 +212,14 @@ make scrape customer_name={CUSTOMER_NAME} ENV=dev
 1. The Scrapy spider follows the rules defined in `src/etl_crawler/customer_configs/{CUSTOMER}.yml`, collecting URLs and PDF links into `url_list.jsonl`
 2. Each URL is visited with Playwright (expanding accordions/tabs), and PDFs are downloaded and parsed. All content is written to `{CUSTOMER}_content.jsonl`
 
+**Local docs** (optional — ingest local PDFs/text files):
+
+```bash
+make local-docs customer_name={CUSTOMER_NAME} ENV=dev data_dir=data/{CUSTOMER_NAME}/{timestamp}
+```
+
+Reads folders listed under `local_docs_dirs` in `src/etl_crawler/customer_configs/{CUSTOMER}.yml` (e.g. `data/bnf/extern_docs`, `data/bnf/internal_docs`), extracts text from `.pdf` and `.txt` files, and appends the results to `{CUSTOMER}_content.jsonl`. No-op if the customer config doesn't define `local_docs_dirs`.
+
 **Post-process only:**
 
 ```bash
@@ -224,7 +234,7 @@ Reads `{CUSTOMER_NAME}_content.jsonl`, filters short/empty content, generates ke
 make index customer_name={CUSTOMER_NAME} ENV=dev data_dir=data/{CUSTOMER_NAME}/{timestamp}
 ```
 
-Reads `processed_data.xlsx`, chunks documents with `SemanticChunker`, generates embeddings and titles, creates the Azure AI Search index `index-{CUSTOMER_NAME}`, and uploads all chunks.
+Reads `processed_data.xlsx`, chunks documents with `SemanticChunker`, generates embeddings and titles, creates the Azure AI Search index `index_{CUSTOMER_NAME}`, and uploads all chunks.
 
 **Post-process + index together:**
 
@@ -250,7 +260,7 @@ PYTHONPATH=. python -m src.etl_crawler run --customer {CUSTOMER_NAME} --data-dir
 
 - The crawler config per customer is in `src/etl_crawler/customer_configs/{customer_name}.yml`
 - Data artifacts are written to `data/{customer_name}/{timestamp}/` (gitignored)
-- Index naming convention: `db-{customer_name}` (e.g. `db-{CUSTOMER_NAME}`, `db-bnf`)
+- Index naming convention: `index_{customer_name}` (e.g. `index_{CUSTOMER_NAME}`, `index_bnf`)
 - The pipeline does not handle scanned PDFs without a text layer
 
 </details>
@@ -274,7 +284,7 @@ make test-quick
 
 ### Azure AI Search index checks (manual)
 
-These use `curl` against the search REST API. They read `AZURE_SEARCH_ENDPOINT` and `AZURE_SEARCH_SERVICE_PRIMARY_ADMIN_KEY` from `.env.<ENV>.app` (e.g. `.env.dev.app`) and target the same index name as the pipeline: `index-<customer_name>`. Use a POSIX shell (e.g. Git Bash on Windows) so `grep`, `curl`, and `make` recipes behave as written.
+These use `curl` against the search REST API. They read `AZURE_SEARCH_ENDPOINT` and `AZURE_SEARCH_SERVICE_PRIMARY_ADMIN_KEY` from `.env.<ENV>.app` (e.g. `.env.dev.app`) and target the same index name as the pipeline: `index_<customer_name>`. Use a POSIX shell (e.g. Git Bash on Windows) so `grep`, `curl`, and `make` recipes behave as written.
 
 **Sample documents (readable JSON)** — omits `text_vector` by default so output is not dominated by embeddings:
 
@@ -443,7 +453,7 @@ To be implemented
    - `pipeline-all-customers`
    - `smoke-test`
    - `notify`
-3. Smoke tests validate indexes (`index-{CUSTOMER_NAME}`, `db-bnf`)
+3. Smoke tests validate indexes (`index_{CUSTOMER_NAME}`, e.g. `index_bnf`)
 4. Webhook sends a status message to Teams/Slack
 
 To trigger manually at any time:
