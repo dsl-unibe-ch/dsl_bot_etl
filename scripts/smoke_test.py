@@ -73,7 +73,7 @@ def run_smoke_tests(env: str) -> list[dict]:
 
     results = []
     for customer in customers:
-        index_name = f"kb-{customer}"
+        index_name = f"index_{customer}"
         logger.info("Checking index '%s' ...", index_name)
         result = _check_index(settings, index_name)
         results.append(result)

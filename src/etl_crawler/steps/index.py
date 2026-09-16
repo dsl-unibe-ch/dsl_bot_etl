@@ -24,6 +24,7 @@ from azure.search.documents.indexes.models import (
     SearchIndex,
     SemanticConfiguration,
     SemanticField,
+    SemanticPrioritizedFields,
     SemanticSearch,
     SimpleField,
     VectorSearch,
@@ -81,6 +82,8 @@ def german2english(text: str, settings: AppSettings) -> str:
         api_version=settings.AZURE_OPENAI_CHAT_API_VERSION,
         azure_endpoint=settings.AZURE_OPENAI_ENDPOINT,
         api_key=settings.AZURE_OPENAI_PRIMARY_KEY,
+        timeout=60.0,
+        max_retries=3,
     )
 
     translation_chain = translation_prompt | chat_client
@@ -123,6 +126,8 @@ def _generate_chunk_title(chunk: str, settings: AppSettings) -> str:
         api_version=settings.AZURE_OPENAI_CHAT_API_VERSION,
         azure_endpoint=settings.AZURE_OPENAI_ENDPOINT,
         api_key=settings.AZURE_OPENAI_PRIMARY_KEY,
+        timeout=60.0,
+        max_retries=3,
     )
     try:
         return (prompt | chat).invoke({"input": chunk}).content
@@ -163,14 +168,14 @@ def _build_index_schema(index_name: str, settings: AppSettings) -> SearchIndex:
     )
     semantic_config = SemanticConfiguration(
         name="mySemanticConfig",
-        prioritized_fields={
-            "title_field": SemanticField(field_name="Title_Chunk"),
-            "content_fields": [
+        prioritized_fields=SemanticPrioritizedFields(
+            title_field=SemanticField(field_name="Title_Chunk"),
+            content_fields=[
                 SemanticField(field_name="chunk"),
                 SemanticField(field_name="Example_Questions"),
             ],
-            "keywords_fields": [SemanticField(field_name="Keyword")],
-        },
+            keywords_fields=[SemanticField(field_name="Keyword")],
+        ),
     )
     fields = [
         SimpleField(name="chunk_id", type=SearchFieldDataType.String, key=True),
@@ -389,6 +394,8 @@ def run_etl(
         azure_deployment=settings.AZURE_OPENAI_SEARCH_EMBEDDING_DEPLOYMENT,
         api_version=settings.AZURE_OPENAI_SEARCH_EMBEDDING_API_VERSION,
         api_key=settings.AZURE_OPENAI_PRIMARY_KEY,
+        timeout=60.0,
+        max_retries=3,
     )
     wrapper = AzureEmbeddingWrapper(
         embedding_client, settings.AZURE_OPENAI_SEARCH_EMBEDDING_DEPLOYMENT
@@ -546,7 +553,7 @@ def run(run_context: RunContext) -> IndexResult:
             f"processed_data.xlsx not found in {run_context.data_dir}"
         )
 
-    index_name = f"kb-{run_context.customer_name}"
+    index_name = f"index_{run_context.customer_name}"
     summary = run_etl(
         xlsx_path, index_name, run_context.app_settings, run_context.data_dir
     )

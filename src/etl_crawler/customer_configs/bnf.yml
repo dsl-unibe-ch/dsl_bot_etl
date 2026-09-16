@@ -30,3 +30,6 @@ feed:
   encoding: utf-8
 jobdir: scripts/crawler/jobs/bnf
 extract_concurrency: 3
+local_docs_dirs:
+  - data/bnf/extern_docs
+  - data/bnf/internal_docs

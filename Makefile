@@ -29,6 +29,10 @@ lint:
 	@echo $@
 	$(PYTHON) -m ruff check --fix src 
 
+playwright-install:
+	@echo $@
+	$(PYTHON) -m playwright install chromium
+
 
 # ---------- Full pipeline (all steps) ----------
 
@@ -46,26 +50,34 @@ pipeline:
 
 
 # ---------- Individual step groups ----------
+# Each target is a separate process invocation; without data_dir it creates a
+# NEW data/{customer_name}/{timestamp}/ dir, so outputs from a prior step won't
+# be found. Pass data_dir=data/{customer_name}/{timestamp} to resume a run.
 
 scrape:
 	@echo $@
 	@ENV=$(ENV) PYTHONPATH=$(shell pwd) $(PYTHON) -m src.etl_crawler run \
-		--customer $(customer_name) --steps crawl,extract
+		--customer $(customer_name) --steps crawl,extract $(if $(data_dir),--data-dir $(data_dir),)
+
+local-docs:
+	@echo $@
+	@ENV=$(ENV) PYTHONPATH=$(shell pwd) $(PYTHON) -m src.etl_crawler run \
+		--customer $(customer_name) --steps local_docs $(if $(data_dir),--data-dir $(data_dir),)
 
 post-process:
 	@echo $@
 	@ENV=$(ENV) PYTHONPATH=$(shell pwd) $(PYTHON) -m src.etl_crawler run \
-		--customer $(customer_name) --steps post_process
+		--customer $(customer_name) --steps post_process $(if $(data_dir),--data-dir $(data_dir),)
 
 index:
 	@echo $@
 	@ENV=$(ENV) PYTHONPATH=$(shell pwd) $(PYTHON) -m src.etl_crawler run \
-		--customer $(customer_name) --steps index
+		--customer $(customer_name) --steps index $(if $(data_dir),--data-dir $(data_dir),)
 
 etl:
 	@echo $@
 	@ENV=$(ENV) PYTHONPATH=$(shell pwd) $(PYTHON) -m src.etl_crawler run \
-		--customer $(customer_name) --steps post_process,index
+		--customer $(customer_name) --steps post_process,index $(if $(data_dir),--data-dir $(data_dir),)
 
 
 # ---------- Tests ----------
@@ -84,6 +96,14 @@ test-quick:
 copy-secrets-from-container:
 	@PYTHONPATH=$(shell pwd) $(PYTHON) scripts/copy_secrets_from_container.py --ENV $(ENV)
 
+# Read-only check of why the storage account rejects requests (auth vs. network).
+storage-diagnose:
+	@account=$$(echo "$(STORAGE_CONN_STR)" | sed -n 's/.*AccountName=\([^;]*\).*/\1/p'); \
+	echo "Storage account: $$account"; \
+	az storage account show --name "$$account" \
+	  --query "{resourceGroup:resourceGroup,location:location,allowSharedKeyAccess:allowSharedKeyAccess,publicNetworkAccess:publicNetworkAccess,defaultAction:networkRuleSet.defaultAction,ipRules:networkRuleSet.ipRules}" \
+	  -o json
+
 
 # ---------- Container entrypoint (runs inside Docker) ----------
 
@@ -96,12 +116,13 @@ run-scheduled:
 smoke-test:
 	@PYTHONPATH=$(shell pwd) $(PYTHON) scripts/smoke_test.py --ENV $(ENV)
 
-# Query Azure AI Search directly (same index name as the pipeline: kb-<customer_name>).
+# Query Azure AI Search directly (same index name as the pipeline: index_<customer_name>).
 # Requires curl and a populated .env.$(ENV).app with AZURE_SEARCH_* vars.
-# Example: make search-probe ENV=dev customer_name=bnf
+# Example: make search-probe ENV=dev customer_name=bnf query="stipendium"
 # Default select omits text_vector (embedding) so output stays readable; override if needed.
 SEARCH_API_VERSION ?= 2023-11-01
 SEARCH_PROBE_SELECT ?= chunk_id,DocumentID,Link,Title,Title_Chunk,Category
+query ?= *
 
 search-probe: require-env
 	@test -n "$(customer_name)" || (echo "Error: customer_name is required. Example: make search-probe ENV=dev customer_name=bnf"; exit 1)
@@ -112,15 +133,16 @@ search-probe: require-env
 	ENDPOINT=$$(echo "$$ENDPOINT" | sed 's/^[" ]*//;s/[" ]*$$//'); \
 	KEY=$$(echo "$$KEY" | sed 's/^[" ]*//;s/[" ]*$$//'); \
 	NORMALIZED=$${ENDPOINT%/}; \
-	INDEX_NAME="kb-$(customer_name)"; \
+	INDEX_NAME="index_$(customer_name)"; \
 	echo "Index: $$INDEX_NAME"; \
+	echo "Query: $(query)"; \
 	echo "POST $$NORMALIZED/indexes/$$INDEX_NAME/docs/search?api-version=$(SEARCH_API_VERSION)"; \
 	curl -sS -X POST "$$NORMALIZED/indexes/$$INDEX_NAME/docs/search?api-version=$(SEARCH_API_VERSION)" \
 	  -H "Content-Type: application/json" \
 	  -H "api-key: $$KEY" \
-	  -d "{\"search\":\"*\",\"top\":5,\"count\":true,\"select\":\"$(SEARCH_PROBE_SELECT)\"}" | $(PYTHON) -m json.tool
+	  -d "{\"search\":\"$(query)\",\"top\":5,\"count\":true,\"select\":\"$(SEARCH_PROBE_SELECT)\"}" | $(PYTHON) -m json.tool
 
-# GET index statistics (document count + storage size). Same index naming as the pipeline: kb-<customer_name>.
+# GET index statistics (document count + storage size). Same index naming as the pipeline: index_<customer_name>.
 # Example: make search-count ENV=dev customer_name=bnf
 search-count: require-env
 	@test -n "$(customer_name)" || (echo "Error: customer_name is required. Example: make search-count ENV=dev customer_name=bnf"; exit 1)
@@ -131,7 +153,7 @@ search-count: require-env
 	ENDPOINT=$$(echo "$$ENDPOINT" | sed 's/^[" ]*//;s/[" ]*$$//'); \
 	KEY=$$(echo "$$KEY" | sed 's/^[" ]*//;s/[" ]*$$//'); \
 	NORMALIZED=$${ENDPOINT%/}; \
-	INDEX_NAME="kb-$(customer_name)"; \
+	INDEX_NAME="index_$(customer_name)"; \
 	echo "Index: $$INDEX_NAME"; \
 	echo "GET $$NORMALIZED/indexes/$$INDEX_NAME/stats?api-version=$(SEARCH_API_VERSION)"; \
 	curl -sS -X GET "$$NORMALIZED/indexes/$$INDEX_NAME/stats?api-version=$(SEARCH_API_VERSION)" \
@@ -177,7 +199,8 @@ provision-infra:
 	az containerapp env create \
 	  --name $(AZURE_CONTAINER_APP_ENV_NAME) \
 	  --resource-group $(AZURE_ETL_RESOURCE_GROUP_NAME) \
-	  --location $(AZURE_RESOURCE_GROUP_LOCATION)
+	  --location $(AZURE_RESOURCE_GROUP_LOCATION) \
+	  --logs-destination none
 
 cleanup-old-env-jobs: require-env
 	@current_job="$(JOB_NAME)-$(ENV)"; \
@@ -342,3 +365,22 @@ destroy-infra: require-destroy-confirm
 	  --name $(AZURE_CONTAINER_APP_ENV_NAME) \
 	  --resource-group $(AZURE_ETL_RESOURCE_GROUP_NAME) \
 	  --yes
+
+# Resource providers used by the terraform modules; required once per subscription.
+AZ_REQUIRED_PROVIDERS := Microsoft.Resources Microsoft.Storage Microsoft.ContainerRegistry \
+	Microsoft.KeyVault Microsoft.ContainerService Microsoft.CognitiveServices \
+	Microsoft.Search Microsoft.ApiManagement Microsoft.Network Microsoft.Authorization \
+	Microsoft.OperationalInsights
+
+az-register-providers:
+	@echo "Registering required resource providers on the current subscription..."
+	@for provider in $(AZ_REQUIRED_PROVIDERS); do \
+		state=$$(az provider show -n $$provider --query registrationState -o tsv 2>/dev/null); \
+		if [ "$$state" = "Registered" ]; then \
+			echo "$$provider already registered"; \
+		else \
+			echo "Registering $$provider..."; \
+			az provider register -n $$provider --wait; \
+		fi; \
+	done
+	@echo "All required resource providers are registered."
