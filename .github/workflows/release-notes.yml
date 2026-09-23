@@ -2,146 +2,117 @@ name: Generate Release Notes
 
 on:
   release:
-    types: [published]
-  workflow_dispatch:
-    inputs:
-      tag_name:
-        description: "Release tag to update (e.g. 0.1.2)"
-        required: true
-        type: string
+    types: [created] # trigger the workflow when a new release is created
 
 jobs:
   release-notes:
     runs-on: ubuntu-latest
     permissions:
-      contents: write
-      pull-requests: read
-    env:
-      GH_TOKEN: ${{ github.token }}
+      contents: write # needed to write to repository content
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
         with:
-          fetch-depth: 0
+          fetch-depth: 0 # fetch all git history until the commit tied to the release’s tag
 
-      - name: Install GitHub CLI and jq
-        run: sudo apt-get update && sudo apt-get install -y gh jq
+      - name: Install GitHub CLI + jq
+        run: sudo apt-get install gh jq -y
 
       - name: Get release tag
-        shell: bash
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "TAG_NAME=${{ inputs.tag_name }}" >> "$GITHUB_ENV"
-          else
-            echo "TAG_NAME=${{ github.event.release.tag_name }}" >> "$GITHUB_ENV"
-          fi
+        run: echo "TAG_NAME=${GITHUB_REF#refs/tags/}" >> "$GITHUB_ENV" # extract the tag name you choose in "New release", strip "refs/tags/", and save to env variable GITHUB_ENV (e.g., v1.2.3)
 
-      - name: Get previous tag safely
-        shell: bash
+      - name: Get previous tag safely # Get the previous tag, if it exists, otherwise set to empty
+        id: prev_tag
         run: |
-          if git describe --tags --abbrev=0 "${TAG_NAME}^" >/dev/null 2>&1; then
-            PREV_TAG=$(git describe --tags --abbrev=0 "${TAG_NAME}^")
+          if git describe --tags --abbrev=0 HEAD^ >/dev/null 2>&1; then
+            PREV_TAG=$(git describe --tags --abbrev=0 HEAD^)
             echo "PREV_TAG=$PREV_TAG" >> "$GITHUB_ENV"
             echo "Found previous tag: $PREV_TAG"
           else
+            PREV_TAG=""
             echo "PREV_TAG=" >> "$GITHUB_ENV"
             echo "No previous tag found, using all commits."
           fi
 
-      - name: Collect PRs and Jira IDs
-        shell: bash
+      - name: Collect Jira IDs from PR branches and merge commits
         run: |
-          rm -f jira_ids.txt prs.json merges.txt commits.txt
+          rm -f jira_ids.txt
 
-          if [ -z "$PREV_TAG" ]; then
-            gh pr list \
-              --state merged \
-              --limit 200 \
-              --json number,url,author,title,body,headRefName,mergedAt \
-              > prs.json || echo "[]" > prs.json
+          if [ -z "$PREV_TAG" ]; then # if there is no previous tag
+            echo "No previous tag: using all history"
 
-            git log --pretty=format:"%s%n%b" > commits.txt
-            git log --merges --pretty=format:"%s" > merges.txt
+            gh pr list --state merged --json headRefName,mergedAt > prs.json || echo "[]" > prs.json # get the list of merged PRs which were merged with GitHub Pull Requests workflow and save it to `prs.json`
+
+            jq -r '.[].headRefName' prs.json \
+              | grep -oiE 'DSLBOT-[0-9]+' \
+              | tr '[:lower:]' '[:upper:]' \
+              >> jira_ids.txt || true # extract DSLBOT Jira IDs from branch names, case-insensitively, and normalize them to uppercase
+
+            git log --merges --pretty=format:"%s" >> merges.txt # get a list of merge commit messages (subjects) from the repository’s history in order to catch any merges done with `git merge` and save them to `merges.txt`
+
           else
-            PREV_DATE=$(git log -1 --format=%aI "$PREV_TAG")
+            PREV_DATE=$(git log -1 --format=%ai "$PREV_TAG") # get the date of the previous tag
             echo "Previous tag date: $PREV_DATE"
 
-            gh pr list \
-              --state merged \
-              --search "merged:>$PREV_DATE" \
-              --limit 200 \
-              --json number,url,author,title,body,headRefName,mergedAt \
-              > prs.json || echo "[]" > prs.json
+            gh pr list --state merged --search "merged:>$PREV_DATE" --json headRefName,mergedAt > prs.json || echo "[]" > prs.json # get the list of merged PRs which were merged after the previous release with GitHub Pull Requests workflow and save them to `prs.json`
 
-            git log "$PREV_TAG..$TAG_NAME" --pretty=format:"%s%n%b" > commits.txt
-            git log "$PREV_TAG..$TAG_NAME" --merges --pretty=format:"%s" > merges.txt
+            jq -r '.[].headRefName' prs.json \
+              | grep -oiE 'DSLBOT-[0-9]+' \
+              | tr '[:lower:]' '[:upper:]' \
+              >> jira_ids.txt || true # extract DSLBOT Jira IDs from branch names, case-insensitively, and normalize them to uppercase
+
+            git log "${PREV_TAG}..HEAD" --merges --pretty=format:"%s" >> merges.txt # get a list of merge commit messages (subjects) from the repository’s history after the previous tag in order to catch any merges done with `git merge` and save them to `merges.txt`
           fi
 
-          jq -r '.[] | .headRefName, .title, (.body // "")' prs.json \
-            | grep -Eo '[A-Z][A-Z0-9]+-[0-9]+' >> jira_ids.txt || true
+          grep -oiE 'DSLBOT-[0-9]+' merges.txt \
+            | tr '[:lower:]' '[:upper:]' \
+            >> jira_ids.txt || true # extract DSLBOT Jira IDs from merge commit messages, case-insensitively, and normalize them to uppercase
 
-          grep -Eo '[A-Z][A-Z0-9]+-[0-9]+' merges.txt >> jira_ids.txt || true
-          grep -Eo '[A-Z][A-Z0-9]+-[0-9]+' commits.txt >> jira_ids.txt || true
-
-          if [ -f jira_ids.txt ]; then
-            sort -u jira_ids.txt > jira_ids_clean.txt
-            mv jira_ids_clean.txt jira_ids.txt
-          fi
+          sort -u jira_ids.txt > jira_ids_clean.txt # sort and remove duplicates
+          mv jira_ids_clean.txt jira_ids.txt # rename back to jira_ids.txt
 
           echo "Collected Jira IDs:"
           cat jira_ids.txt || echo "None found"
 
-      - name: Build release notes from PRs and Jira
+      - name: Fetch Jira ticket details
         env:
           JIRA_USER: ${{ secrets.JIRA_USER }}
           JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
           JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
-        shell: bash
         run: |
+          echo "## Release Notes" > release_notes.md
+          echo "" >> release_notes.md
+
           baseURL="${JIRA_BASE_URL%/}"
-          declare -A jira_summary_cache
 
-          {
-            echo "## What's Changed"
-            echo
-          } > release_notes.md
+          # Get the Jira Cloud ID needed for scoped API tokens
+          CLOUD_ID=$(curl -s "$baseURL/_edge/tenant_info" | jq -r '.cloudId')
+          API_BASE_URL="https://api.atlassian.com/ex/jira/$CLOUD_ID"
 
-          if [ "$(jq length prs.json)" -gt 0 ]; then
-            while IFS= read -r PR; do
-              TITLE=$(echo "$PR" | jq -r '.title')
-              URL=$(echo "$PR" | jq -r '.url')
-              AUTHOR=$(echo "$PR" | jq -r '.author.login // "unknown"')
-              HEAD_REF=$(echo "$PR" | jq -r '.headRefName // ""')
-              BODY=$(echo "$PR" | jq -r '.body // ""')
+          echo "Using Jira Cloud ID: $CLOUD_ID"
 
-              JIRA_ID=$(printf "%s\n%s\n%s\n" "$HEAD_REF" "$TITLE" "$BODY" | grep -Eo '[A-Z][A-Z0-9]+-[0-9]+' | head -n 1 || true)
+          if [ -s jira_ids.txt ]; then # if jira_ids.txt is not empty
+            while IFS= read -r ID; do # for each Jira ID in jira_ids.txt
 
-              if [ -n "$JIRA_ID" ] && [ -n "$baseURL" ] && [ -n "$JIRA_USER" ] && [ -n "$JIRA_API_TOKEN" ]; then
-                if [ -z "${jira_summary_cache[$JIRA_ID]}" ]; then
-                  RESPONSE=$(curl -s \
-                    -u "$JIRA_USER:$JIRA_API_TOKEN" \
-                    -H "Accept: application/json" \
-                    "$baseURL/rest/api/2/issue/$JIRA_ID")
-                  jira_summary_cache[$JIRA_ID]=$(echo "$RESPONSE" | jq -r '.fields.summary // empty')
-                fi
+              ISSUE=$(curl -s \
+                -u "$JIRA_USER:$JIRA_API_TOKEN" \
+                -H "Accept: application/json" \
+                -X GET "$API_BASE_URL/rest/api/2/issue/$ID")
 
-                ISSUE_SUMMARY="${jira_summary_cache[$JIRA_ID]}"
-                if [ -n "$ISSUE_SUMMARY" ]; then
-                  echo "* [$JIRA_ID]($baseURL/browse/$JIRA_ID) $ISSUE_SUMMARY by @$AUTHOR in $URL" >> release_notes.md
-                else
-                  echo "* [$JIRA_ID]($baseURL/browse/$JIRA_ID) by @$AUTHOR in $URL" >> release_notes.md
-                fi
-              else
-                echo "* $TITLE by @$AUTHOR in $URL" >> release_notes.md
-              fi
-            done < <(jq -c 'sort_by(.mergedAt)[]' prs.json)
+              SUMMARY=$(echo "$ISSUE" | jq -r '.fields.summary')
+              ASSIGNEE=$(echo "$ISSUE" | jq -r '.fields.assignee.displayName // "Unassigned"')
+
+              echo "- [$ID]($baseURL/browse/$ID) $SUMMARY — Assignee: $ASSIGNEE" >> release_notes.md
+
+            done < jira_ids.txt # read from jira_ids.txt
+
           else
-            echo "_No merged pull requests found for this release._" >> release_notes.md
+            echo "_No Jira tickets found for this release._" >> release_notes.md
           fi
 
-          echo >> release_notes.md
-          echo "**Full Changelog**: https://github.com/${{ github.repository }}/commits/$TAG_NAME" >> release_notes.md
-
       - name: Update GitHub release with notes
-        run: gh release edit "$TAG_NAME" --notes-file release_notes.md
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release edit "$TAG_NAME" --notes-file release_notes.md # update the GitHub release with the content of release_notes.md
