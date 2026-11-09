@@ -4,7 +4,11 @@ import argparse
 import logging
 from pathlib import Path
 
-from src.etl_crawler.pipeline import STEP_REGISTRY, run_pipeline
+from src.etl_crawler.pipeline import (
+    STEP_REGISTRY,
+    run_pipeline,
+    run_pipeline_for_enabled_customers,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -22,11 +26,13 @@ def main() -> None:
     )
     subparsers = parser.add_subparsers(dest="command")
 
-    run_parser = subparsers.add_parser("run", help="Execute pipeline steps")
+    run_parser = subparsers.add_parser(
+        "run", help="Execute pipeline steps for one customer"
+    )
     run_parser.add_argument(
         "--customer",
         required=True,
-        help="Customer name (must match a YAML config in customer_configs/).",
+        help="Customer id (must match a registry container customer-registry-<id>).",
     )
     run_parser.add_argument(
         "--steps",
@@ -39,6 +45,24 @@ def main() -> None:
         default=None,
         help="Explicit data directory (default: data/<customer>/<timestamp>).",
     )
+    run_parser.add_argument(
+        "--local-crawl-rules",
+        action="store_true",
+        help=(
+            "Use the local customer_configs/<customer>.yml for crawl rules instead of "
+            "the registry blob. Dev/test only."
+        ),
+    )
+
+    run_all_parser = subparsers.add_parser(
+        "run-all",
+        help="Execute the pipeline for every ETL_ENABLED customer in the registry",
+    )
+    run_all_parser.add_argument(
+        "--steps",
+        default=None,
+        help=f"Comma-separated list of steps to run (default: all). Available: {', '.join(STEP_REGISTRY)}",
+    )
 
     args = parser.parse_args()
 
@@ -48,7 +72,11 @@ def main() -> None:
             customer_name=args.customer,
             steps=steps,
             data_dir=args.data_dir,
+            use_local_crawl_rules=args.local_crawl_rules,
         )
+    elif args.command == "run-all":
+        steps = args.steps.split(",") if args.steps else None
+        run_pipeline_for_enabled_customers(steps=steps)
     else:
         parser.print_help()
 

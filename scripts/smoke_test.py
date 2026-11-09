@@ -11,17 +11,13 @@ from azure.core.exceptions import HttpResponseError
 from azure.search.documents import SearchClient
 from azure.search.documents.indexes import SearchIndexClient
 
-from src.etl_crawler.config import AppSettings
+from src.etl_crawler.config import AppSettings, ETLSettings
+from src.etl_crawler.registry import load_enabled_customers
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
-
-
-def _get_customer_list() -> list[str]:
-    raw = os.getenv("CUSTOMER_NAME_LIST", "")
-    return raw.split() if raw else []
 
 
 def _check_index(settings: AppSettings, index_name: str) -> dict:
@@ -66,15 +62,16 @@ def _check_index(settings: AppSettings, index_name: str) -> dict:
 def run_smoke_tests(env: str) -> list[dict]:
     os.environ.setdefault("ENV", env)
     settings = AppSettings()
-    customers = _get_customer_list()
+    etl_settings = ETLSettings()
+    customers = load_enabled_customers(etl_settings)
     if not customers:
-        logger.error("CUSTOMER_NAME_LIST is empty — nothing to test")
+        logger.error("No ETL-enabled customers found in the registry — nothing to test")
         sys.exit(1)
 
     results = []
     for customer in customers:
-        index_name = f"index_{customer}"
-        logger.info("Checking index '%s' ...", index_name)
+        index_name = customer.search_index_name
+        logger.info("Checking index '%s' (customer=%s) ...", index_name, customer.customer_id)
         result = _check_index(settings, index_name)
         results.append(result)
         status = "PASS" if result["passed"] else "FAIL"

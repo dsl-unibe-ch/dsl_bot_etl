@@ -152,7 +152,9 @@ There are three levels of environment variables in this project:
     | `AZURE_CONTAINER_STORAGE_NAME` | Blob container for logs (`dsl-bot-logs`) | Global Resource Group Storage Account Access Keys  |
     | `AZURE_CONTAINER_STORAGE_SECRETS_NAME` | Blob container for secret files (`dsl-bot-secrets`) | Global Resource Group Storage Account Access Keys |
     | `AZURE_CONTAINER_STORAGE_ETL_FILES_NAME` | Blob container for ETL outputs and intermediate files (`dsl-bot-etl-files`) | Global Resource Group Storage Account Access Keys |
-    | `CUSTOMER_NAME_LIST` | Space-separated customer names | Matches YAML configs in `customer_configs/` |
+    | `AZURE_CUSTOMER_REGISTRY_ACCOUNT_URL` | Blob endpoint of the storage account hosting the customer registry (informational; same account as above) | Azure Portal → Storage account → Endpoints |
+    | `AZURE_CUSTOMER_REGISTRY_MANIFEST_CONTAINER` | Container holding the `customers.json` manifest (`customer-registry`) | See [Customer Registry](#customer-registry) |
+    | `AZURE_CUSTOMER_REGISTRY_CONTAINER_PREFIX` | Prefix + customer_id = the per-customer registry container name (`customer-registry-`) | See [Customer Registry](#customer-registry) |
     | `AZURE_ETL_RESOURCE_GROUP_NAME` | Resource group for the ETL infrastructure | Azure Portal |
     | `AZURE_CONTAINER_REGISTRY_NAME` | Existing ACR name | Azure Portal → Container registries |
     | `AZURE_CONTAINER_REGISTRY_LOGIN_SERVER` | ACR login server (e.g. `crdbglobal001.azurecr.io`) | Azure Portal → Container registries → Login server |
@@ -176,6 +178,54 @@ The bootstrap script (`scripts/copy_secrets_from_container.py`) uses the connect
 
 </details>
 
+## Customer Registry
+
+<details>
+<summary>Click to expand</summary>
+
+Customers are no longer hardcoded in `CUSTOMER_NAME_LIST`. Instead, the ETL discovers them from a registry stored in Azure Blob Storage (same storage account as `AZURE_STORAGE_ACCOUNT_PRIMARY_CONNECTION_STRING`):
+
+- **Manifest container** (`AZURE_CUSTOMER_REGISTRY_MANIFEST_CONTAINER`, e.g. `customer-registry`) holds exactly one blob, `customers.json`:
+  ```json
+  {"customer_ids": ["bnf", "default"]}
+  ```
+- **Per-customer container** (`{AZURE_CUSTOMER_REGISTRY_CONTAINER_PREFIX}{customer_id}`, e.g. `customer-registry-bnf`) holds:
+  - `config.env` — a dotenv file shared with the backend repo. The ETL only reads `CUSTOMER_ID`, `CUSTOMER_ROOT_URLS` (a JSON array string, e.g. `["https://example.com"]`), `SEARCH_INDEX_NAME`, and `ETL_ENABLED`; all other keys (`BACKEND_*`, `FRONTEND_*`, `LIFECYCLE_STATUS`, ...) are ignored.
+  - `crawl_config.yml` — the production crawl rules (same shape as the local YAMLs in `customer_configs/`: `allowed_domains`, `allow`, `deny_domains`, `local_docs_dirs`, etc.). `CUSTOMER_ROOT_URLS` becomes the crawl's seed URLs; `crawl_config.yml` can optionally add more via `additional_seed_urls`. This merge only applies to the registry path -- with `local_crawl_rules=1`/`--local-crawl-rules`, the local YAML's own `seed_urls` are used as-is (self-contained, for free-form local iteration), and `CUSTOMER_ROOT_URLS`/`additional_seed_urls` are ignored.
+    - `basic_auth` (optional): for pages behind HTTP Basic Auth, e.g.:
+      ```yaml
+      basic_auth:
+        domain: www.example.com
+        username_env: EXAMPLE_BASIC_AUTH_USER
+        password_env: EXAMPLE_BASIC_AUTH_PASSWORD
+      ```
+      These are env var *names*, never literal credentials — `crawl_config.yml`/local YAMLs are not secret stores. Set the actual values in `.env.etl` (local) or as Container App secrets (production). Customers without `basic_auth` are completely unaffected (no-op on both steps). Scoping differs slightly by step: the Scrapy crawl uses Scrapy's `HTTPAUTH_USER`/`HTTPAUTH_PASS`/`HTTPAUTH_DOMAIN` settings, which attach the header to every request to that exact host (and subdomains) — not just the one protected path, though public pages on the same host simply ignore the extra header. The Playwright extract step scopes credentials to the exact origin and only ever sends them in response to that origin's own 401 challenge, so no other site visited in the run is affected either way.
+
+`SEARCH_INDEX_NAME` is used **literally** as the Azure AI Search index name — it is no longer derived as `index_{customer_name}`.
+
+Only customers with `ETL_ENABLED=True` are processed by `make pipeline-all-customers` / `python -m src.etl_crawler run-all`. A malformed manifest or a malformed customer `config.env` fails the whole run immediately (no local fallback); a customer with `ETL_ENABLED=False` is simply skipped.
+
+### Onboarding a new customer
+
+1. Upload `config.env` and `crawl_config.yml` to the customer's registry container, and add the customer_id to `customers.json`.
+2. **Test crawl rules locally first**, without touching the registry's `crawl_config.yml`:
+   ```bash
+   # Put a draft YAML at src/etl_crawler/customer_configs/<customer_id>.yml, then:
+   make scrape customer_name=<customer_id> ENV=dev local_crawl_rules=1
+   ```
+   Once satisfied, upload that same YAML to the registry container as `crawl_config.yml`.
+3. For a fast first deployment (rather than waiting for the next scheduled all-customers run):
+   ```bash
+   make onboard-customer customer_id=<customer_id> ENV=dev
+   ```
+4. From then on, the regular scheduled job (`make pipeline-all-customers`) picks the customer up automatically — no code change or redeploy needed.
+
+### Access to the registry
+
+The ETL currently reads the registry using the same connection-string-based `BlobServiceClient` as `scripts/copy_secrets_from_container.py` (via `AZURE_STORAGE_ACCOUNT_PRIMARY_CONNECTION_STRING`). If/when the registry is read via a managed identity instead, that identity needs **Storage Blob Data Reader** on the manifest container and every `customer-registry-*` container.
+
+</details>
+
 ## Running the Pipeline Locally
 
 <details>
@@ -185,7 +235,11 @@ The bootstrap script (`scripts/copy_secrets_from_container.py`) uses the connect
 make pipeline customer_name={CUSTOMER_NAME} ENV=dev
 ```
 
-This runs: crawl -> extract -> local_docs -> post_process -> index for a given customer.
+This runs: crawl -> extract -> local_docs -> post_process -> index for a given customer. Crawl rules are fetched from the customer's registry `crawl_config.yml` blob by default -- add `local_crawl_rules=1` to use `src/etl_crawler/customer_configs/{CUSTOMER_NAME}.yml` instead (dev/test only, see [Customer Registry](#customer-registry)):
+
+```bash
+make pipeline customer_name={CUSTOMER_NAME} ENV=dev local_crawl_rules=1
+```
 
 To run the full pipeline for all customers, use
 
@@ -206,10 +260,10 @@ make post-process customer_name={CUSTOMER_NAME} ENV=dev data_dir=data/{CUSTOMER_
 **Scrape** (crawl + extract):
 
 ```bash
-make scrape customer_name={CUSTOMER_NAME} ENV=dev
+make scrape customer_name={CUSTOMER_NAME} ENV=dev local_crawl_rules=1
 ```
 
-1. The Scrapy spider follows the rules defined in `src/etl_crawler/customer_configs/{CUSTOMER}.yml`, collecting URLs and PDF links into `url_list.jsonl`
+1. The Scrapy spider follows the rules defined in the registry's `crawl_config.yml` blob by default, or `src/etl_crawler/customer_configs/{CUSTOMER}.yml` when `local_crawl_rules=1` is passed, collecting URLs and PDF links into `url_list.jsonl`
 2. Each URL is visited with Playwright (expanding accordions/tabs), and PDFs are downloaded and parsed. All content is written to `{CUSTOMER}_content.jsonl`
 
 **Local docs** (optional — ingest local PDFs/text files):
@@ -258,9 +312,9 @@ PYTHONPATH=. python -m src.etl_crawler run --customer {CUSTOMER_NAME} --data-dir
 
 ### Notes
 
-- The crawler config per customer is in `src/etl_crawler/customer_configs/{customer_name}.yml`
+- The crawler config per customer is in `src/etl_crawler/customer_configs/{customer_name}.yml` for local dev/test use (`--local-crawl-rules`). Production runs read `crawl_config.yml` from the customer's registry blob container instead — see [Customer Registry](#customer-registry).
 - Data artifacts are written to `data/{customer_name}/{timestamp}/` (gitignored)
-- Index naming convention: `index_{customer_name}` (e.g. `index_{CUSTOMER_NAME}`, `index_bnf`)
+- Index naming: the Azure AI Search index name is whatever `SEARCH_INDEX_NAME` is set to in the customer's registry `config.env` — used literally, not derived from the customer name.
 - The pipeline does not handle scanned PDFs without a text layer
 
 </details>
@@ -284,25 +338,25 @@ make test-quick
 
 ### Azure AI Search index checks (manual)
 
-These use `curl` against the search REST API. They read `AZURE_SEARCH_ENDPOINT` and `AZURE_SEARCH_SERVICE_PRIMARY_ADMIN_KEY` from `.env.<ENV>.app` (e.g. `.env.dev.app`) and target the same index name as the pipeline: `index_<customer_name>`. Use a POSIX shell (e.g. Git Bash on Windows) so `grep`, `curl`, and `make` recipes behave as written.
+These use `curl` against the search REST API. They read `AZURE_SEARCH_ENDPOINT` and `AZURE_SEARCH_SERVICE_PRIMARY_ADMIN_KEY` from `.env.<ENV>.app` (e.g. `.env.dev.app`) and take the exact index name (`SEARCH_INDEX_NAME` from the customer's registry `config.env`) as a parameter — it's no longer derived from a customer name. Use a POSIX shell (e.g. Git Bash on Windows) so `grep`, `curl`, and `make` recipes behave as written.
 
 **Sample documents (readable JSON)** — omits `text_vector` by default so output is not dominated by embeddings:
 
 ```bash
-make search-probe ENV=dev customer_name={CUSTOMER_NAME}
+make search-probe ENV=dev index_name=index_{CUSTOMER_ID}
 ```
 
 Optional: change API version (`SEARCH_API_VERSION`) or which fields are returned (`SEARCH_PROBE_SELECT`, comma-separated). Examples:
 
 ```bash
-make search-probe ENV=dev customer_name={CUSTOMER_NAME} SEARCH_PROBE_SELECT='chunk_id,Link,Title,chunk'
-make search-probe ENV=dev customer_name={CUSTOMER_NAME} SEARCH_PROBE_SELECT='*'
+make search-probe ENV=dev index_name=index_{CUSTOMER_ID} SEARCH_PROBE_SELECT='chunk_id,Link,Title,chunk'
+make search-probe ENV=dev index_name=index_{CUSTOMER_ID} SEARCH_PROBE_SELECT='*'
 ```
 
 **Document count** — index statistics from the service:
 
 ```bash
-make search-count ENV=dev customer_name={CUSTOMER_NAME}
+make search-count ENV=dev index_name=index_index_{CUSTOMER_ID}
 ```
 
 Prints `documentCount` and `storageSize`.
@@ -342,7 +396,9 @@ Required `.env.etl` keys:
 - `AZURE_CONTAINER_STORAGE_NAME`
 - `AZURE_CONTAINER_STORAGE_SECRETS_NAME`
 - `AZURE_CONTAINER_STORAGE_ETL_FILES_NAME`
-- `CUSTOMER_NAME_LIST`
+- `AZURE_CUSTOMER_REGISTRY_ACCOUNT_URL`
+- `AZURE_CUSTOMER_REGISTRY_MANIFEST_CONTAINER`
+- `AZURE_CUSTOMER_REGISTRY_CONTAINER_PREFIX`
 - `AZURE_ETL_RESOURCE_GROUP_NAME`
 - `AZURE_CONTAINER_REGISTRY_NAME`
 - `AZURE_CONTAINER_REGISTRY_LOGIN_SERVER`
@@ -453,7 +509,7 @@ To be implemented
    - `pipeline-all-customers`
    - `smoke-test`
    - `notify`
-3. Smoke tests validate indexes (`index_{CUSTOMER_NAME}`, e.g. `index_bnf`)
+3. Smoke tests validate indexes by their registry `SEARCH_INDEX_NAME`
 4. Webhook sends a status message to Teams/Slack
 
 To trigger manually at any time:

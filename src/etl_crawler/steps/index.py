@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pandas as pd
+import tiktoken
 from azure.core.credentials import AzureKeyCredential
 from azure.core.exceptions import HttpResponseError
 from azure.search.documents import SearchClient
@@ -57,6 +58,10 @@ INDEX_COUNT_CHECK_ATTEMPTS = 20
 INDEX_COUNT_CHECK_SLEEP_SECONDS = 15
 INDEX_EXPORT_PAGE_SIZE = 1000
 
+# Azure OpenAI embedding models accept at most 8192 tokens per input.
+EMBEDDING_MAX_TOKENS = 8192
+EMBEDDING_ENCODING = "cl100k_base"
+
 
 def german2english(text: str, settings: AppSettings) -> str:
     """Translate German text to English."""
@@ -96,6 +101,7 @@ class AzureEmbeddingWrapper:
     def __init__(self, embedding_client: AzureOpenAI, deployment: str) -> None:
         self._client = embedding_client
         self._deployment = deployment
+        self._encoding = tiktoken.get_encoding(EMBEDDING_ENCODING)
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
         return [self._get_embedding(t) for t in texts]
@@ -103,8 +109,21 @@ class AzureEmbeddingWrapper:
     def embed_query(self, text: str) -> list[float]:
         return self._get_embedding(text)
 
+    def _truncate_to_token_limit(self, text: str) -> str:
+        tokens = self._encoding.encode(text)
+        if len(tokens) <= EMBEDDING_MAX_TOKENS:
+            return text
+        logger.warning(
+            "Embedding input has %d tokens; truncating to %d tokens",
+            len(tokens),
+            EMBEDDING_MAX_TOKENS,
+        )
+        return self._encoding.decode(tokens[:EMBEDDING_MAX_TOKENS])
+
     def _get_embedding(self, text: str) -> list[float]:
-        resp = self._client.embeddings.create(input=[text], model=self._deployment)
+        resp = self._client.embeddings.create(
+            input=[self._truncate_to_token_limit(text)], model=self._deployment
+        )
         return resp.data[0].embedding
 
 
@@ -553,7 +572,7 @@ def run(run_context: RunContext) -> IndexResult:
             f"processed_data.xlsx not found in {run_context.data_dir}"
         )
 
-    index_name = f"index_{run_context.customer_name}"
+    index_name = run_context.search_index_name
     summary = run_etl(
         xlsx_path, index_name, run_context.app_settings, run_context.data_dir
     )

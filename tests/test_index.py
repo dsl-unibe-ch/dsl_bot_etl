@@ -2,8 +2,38 @@
 
 import json
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
-from src.etl_crawler.steps.index import _generate_change_summary, _find_previous_run_json
+from src.etl_crawler.pipeline import RunContext
+from src.etl_crawler.steps.index import (
+    EMBEDDING_MAX_TOKENS,
+    AzureEmbeddingWrapper,
+    _find_previous_run_json,
+    _generate_change_summary,
+    run,
+)
+
+
+class TestAzureEmbeddingWrapper:
+    def _make_wrapper(self) -> tuple[AzureEmbeddingWrapper, MagicMock]:
+        client = MagicMock()
+        client.embeddings.create.return_value.data = [MagicMock(embedding=[0.1, 0.2])]
+        return AzureEmbeddingWrapper(client, "test-deployment"), client
+
+    def test_short_text_sent_unchanged(self):
+        wrapper, client = self._make_wrapper()
+        wrapper.embed_query("hello world")
+        client.embeddings.create.assert_called_once_with(
+            input=["hello world"], model="test-deployment"
+        )
+
+    def test_long_text_truncated_to_token_limit(self):
+        wrapper, client = self._make_wrapper()
+        long_text = "word " * (EMBEDDING_MAX_TOKENS * 2)
+        wrapper.embed_query(long_text)
+        sent_text = client.embeddings.create.call_args.kwargs["input"][0]
+        assert len(wrapper._encoding.encode(sent_text)) <= EMBEDDING_MAX_TOKENS
+        assert len(sent_text) < len(long_text)
 
 
 class TestGenerateChangeSummary:
@@ -90,3 +120,26 @@ class TestFindPreviousRunJson:
 
         result = _find_previous_run_json(current, "dev")
         assert result is None
+
+
+class TestRunUsesExactIndexName:
+    def test_passes_search_index_name_literally(self, run_context: RunContext):
+        (run_context.data_dir / "processed_data.xlsx").write_bytes(b"fake-xlsx")
+        run_context.search_index_name = "totally-custom-name"
+
+        with patch("src.etl_crawler.steps.index.run_etl") as mock_run_etl:
+            mock_run_etl.return_value = {
+                "index_name": "totally-custom-name",
+                "chunk_count": 0,
+            }
+            result = run(run_context)
+
+        mock_run_etl.assert_called_once_with(
+            run_context.data_dir / "processed_data.xlsx",
+            "totally-custom-name",
+            run_context.app_settings,
+            run_context.data_dir,
+        )
+        assert result.index_name == "totally-custom-name"
+        # Must never fall back to the old index_{customer_name} derivation.
+        assert not mock_run_etl.call_args[0][1].startswith("index_test_customer")

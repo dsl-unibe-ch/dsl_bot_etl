@@ -24,6 +24,8 @@ from playwright.async_api import (
     TimeoutError as PlaywrightTimeout,
 )
 
+from src.etl_crawler.auth import resolve_basic_auth
+
 if TYPE_CHECKING:
     from src.etl_crawler.pipeline import RunContext
 
@@ -38,10 +40,18 @@ logger = logging.getLogger(__name__)
 class ContentExtractor:
     """Expand accordions/tabs then extract text in reading order."""
 
-    def __init__(self, customer_name: str, output_dir: Path) -> None:
+    def __init__(
+        self,
+        customer_name: str,
+        output_dir: Path,
+        http_credentials: dict[str, str] | None = None,
+    ) -> None:
         self.customer_name = customer_name
         self.output_dir = output_dir
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        # Playwright only sends these in response to a same-origin 401 challenge, so
+        # it's safe to set once for the whole run even though most pages don't need it.
+        self.http_credentials = http_credentials
 
     async def expand_all_accordions(self, page: Page) -> int:
         """Expand all accordions on the page."""
@@ -257,6 +267,7 @@ class ContentExtractor:
             context = await browser.new_context(
                 viewport={"width": 1920, "height": 1080},
                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                http_credentials=self.http_credentials,
             )
             try:
 
@@ -432,8 +443,22 @@ def run(run_context: RunContext) -> ExtractResult:
         asyncio.set_event_loop(loop)
         try:
             concurrency = run_context.customer_config.get("extract_concurrency", 3)
+            basic_auth = resolve_basic_auth(run_context.customer_config)
+            http_credentials = (
+                {
+                    "username": basic_auth[1],
+                    "password": basic_auth[2],
+                    # Scopes credentials to this origin only -- Playwright never even
+                    # attempts them against any other site visited in this run.
+                    "origin": f"https://{basic_auth[0]}",
+                }
+                if basic_auth
+                else None
+            )
             extractor = ContentExtractor(
-                run_context.customer_name, run_context.data_dir
+                run_context.customer_name,
+                run_context.data_dir,
+                http_credentials=http_credentials,
             )
             loop.run_until_complete(
                 extractor.process_urls(urls, output_file, concurrency=concurrency)

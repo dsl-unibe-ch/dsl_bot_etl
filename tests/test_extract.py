@@ -3,6 +3,7 @@
 import json
 from pathlib import Path
 
+import pytest
 from bs4 import BeautifulSoup
 
 from src.etl_crawler.steps.extract import ContentExtractor, PDFContentExtractor
@@ -65,3 +66,31 @@ class TestExtractStep:
         result = run(run_context)
         assert result.url_count == 0
         assert result.pdf_count == 0
+
+    def test_run_passes_resolved_basic_auth_credentials(
+        self, run_context, monkeypatch: pytest.MonkeyPatch
+    ):
+        from unittest.mock import AsyncMock, patch
+
+        from src.etl_crawler.steps.extract import run
+
+        monkeypatch.setenv("TEST_AUTH_USER", "alice")
+        monkeypatch.setenv("TEST_AUTH_PASS", "s3cret")
+        run_context.customer_config["basic_auth"] = {
+            "domain": "example.com",
+            "username_env": "TEST_AUTH_USER",
+            "password_env": "TEST_AUTH_PASS",
+        }
+        url_list = run_context.data_dir / "url_list.jsonl"
+        url_list.write_text('{"URL": "https://example.com"}\n', encoding="utf-8")
+
+        with patch("src.etl_crawler.steps.extract.ContentExtractor") as mock_cls:
+            mock_cls.return_value.process_urls = AsyncMock()
+            run(run_context)
+
+        _, kwargs = mock_cls.call_args
+        assert kwargs["http_credentials"] == {
+            "username": "alice",
+            "password": "s3cret",
+            "origin": "https://example.com",
+        }

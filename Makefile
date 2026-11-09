@@ -1,6 +1,5 @@
 PYTHON := $(firstword $(wildcard .venv/bin/python) $(wildcard .venv/Scripts/python.exe) python)
 VERSION=$(shell grep '^version' pyproject.toml | head -1 | cut -d '"' -f2)
-CUSTOMER_NAME_LIST ?= $(shell [ -f .env.etl ] && grep '^CUSTOMER_NAME_LIST=' .env.etl | cut -d '=' -f2-)
 
 # ---------- Read Azure config from .env.etl ----------
 AZURE_ETL_RESOURCE_GROUP_NAME ?= $(shell [ -f .env.etl ] && grep '^AZURE_ETL_RESOURCE_GROUP_NAME=' .env.etl | cut -d '=' -f2-)
@@ -34,19 +33,26 @@ playwright-install:
 	$(PYTHON) -m playwright install chromium
 
 
-# ---------- Full pipeline (all steps) ----------
+# ---------- Full pipeline (all customers, driven by the registry) ----------
 
 pipeline-all-customers:
 	@echo $@
-	@for customer in $(CUSTOMER_NAME_LIST); do \
-		ENV=$(ENV) PYTHONPATH=$(shell pwd) $(PYTHON) -m src.etl_crawler run \
-			--customer $$customer; \
-	done
+	@ENV=$(ENV) PYTHONPATH=$(shell pwd) $(PYTHON) -m src.etl_crawler run-all
 
 pipeline:
 	@echo $@
 	@ENV=$(ENV) PYTHONPATH=$(shell pwd) $(PYTHON) -m src.etl_crawler run \
-		--customer $(customer_name)
+		--customer $(customer_name) $(if $(local_crawl_rules),--local-crawl-rules,)
+
+# Fast first-run path for a newly onboarded customer: runs the full pipeline for
+# just one registry-enabled customer_id, without waiting for/running the full
+# all-customers job. Crawl rules are always read from the registry blob here
+# (production path) -- test them locally first with `make scrape --local-crawl-rules`.
+onboard-customer:
+	@echo $@
+	@test -n "$(customer_id)" || (echo "Error: customer_id is required. Example: make onboard-customer customer_id=bnf ENV=dev"; exit 1)
+	@ENV=$(ENV) PYTHONPATH=$(shell pwd) $(PYTHON) -m src.etl_crawler run \
+		--customer $(customer_id)
 
 
 # ---------- Individual step groups ----------
@@ -57,7 +63,7 @@ pipeline:
 scrape:
 	@echo $@
 	@ENV=$(ENV) PYTHONPATH=$(shell pwd) $(PYTHON) -m src.etl_crawler run \
-		--customer $(customer_name) --steps crawl,extract $(if $(data_dir),--data-dir $(data_dir),)
+		--customer $(customer_name) --steps crawl,extract $(if $(data_dir),--data-dir $(data_dir),) $(if $(local_crawl_rules),--local-crawl-rules,)
 
 local-docs:
 	@echo $@
@@ -116,16 +122,13 @@ run-scheduled:
 smoke-test:
 	@PYTHONPATH=$(shell pwd) $(PYTHON) scripts/smoke_test.py --ENV $(ENV)
 
-# Query Azure AI Search directly (same index name as the pipeline: index_<customer_name>).
-# Requires curl and a populated .env.$(ENV).app with AZURE_SEARCH_* vars.
-# Example: make search-probe ENV=dev customer_name=bnf query="stipendium"
-# Default select omits text_vector (embedding) so output stays readable; override if needed.
+
 SEARCH_API_VERSION ?= 2023-11-01
 SEARCH_PROBE_SELECT ?= chunk_id,DocumentID,Link,Title,Title_Chunk,Category
 query ?= *
 
 search-probe: require-env
-	@test -n "$(customer_name)" || (echo "Error: customer_name is required. Example: make search-probe ENV=dev customer_name=bnf"; exit 1)
+	@test -n "$(index_name)" || (echo "Error: index_name is required. Example: make search-probe ENV=dev index_name=index_{CUSTOMER_ID}"; exit 1)
 	@_app_env=".env.$(ENV).app"; \
 	if [ ! -f "$$_app_env" ]; then echo "Error: missing $$_app_env"; exit 1; fi; \
 	ENDPOINT=$$(grep '^AZURE_SEARCH_ENDPOINT=' "$$_app_env" | cut -d= -f2- | tr -d '\r'); \
@@ -133,7 +136,7 @@ search-probe: require-env
 	ENDPOINT=$$(echo "$$ENDPOINT" | sed 's/^[" ]*//;s/[" ]*$$//'); \
 	KEY=$$(echo "$$KEY" | sed 's/^[" ]*//;s/[" ]*$$//'); \
 	NORMALIZED=$${ENDPOINT%/}; \
-	INDEX_NAME="index_$(customer_name)"; \
+	INDEX_NAME="$(index_name)"; \
 	echo "Index: $$INDEX_NAME"; \
 	echo "Query: $(query)"; \
 	echo "POST $$NORMALIZED/indexes/$$INDEX_NAME/docs/search?api-version=$(SEARCH_API_VERSION)"; \
@@ -142,10 +145,10 @@ search-probe: require-env
 	  -H "api-key: $$KEY" \
 	  -d "{\"search\":\"$(query)\",\"top\":5,\"count\":true,\"select\":\"$(SEARCH_PROBE_SELECT)\"}" | $(PYTHON) -m json.tool
 
-# GET index statistics (document count + storage size). Same index naming as the pipeline: index_<customer_name>.
-# Example: make search-count ENV=dev customer_name=bnf
+# GET index statistics (document count + storage size). Pass the exact index name.
+
 search-count: require-env
-	@test -n "$(customer_name)" || (echo "Error: customer_name is required. Example: make search-count ENV=dev customer_name=bnf"; exit 1)
+	@test -n "$(index_name)" || (echo "Error: index_name is required. Example: make search-count ENV=dev index_name=index_{CUSTOMER_ID}"; exit 1)
 	@_app_env=".env.$(ENV).app"; \
 	if [ ! -f "$$_app_env" ]; then echo "Error: missing $$_app_env"; exit 1; fi; \
 	ENDPOINT=$$(grep '^AZURE_SEARCH_ENDPOINT=' "$$_app_env" | cut -d= -f2- | tr -d '\r'); \
@@ -153,7 +156,7 @@ search-count: require-env
 	ENDPOINT=$$(echo "$$ENDPOINT" | sed 's/^[" ]*//;s/[" ]*$$//'); \
 	KEY=$$(echo "$$KEY" | sed 's/^[" ]*//;s/[" ]*$$//'); \
 	NORMALIZED=$${ENDPOINT%/}; \
-	INDEX_NAME="index_$(customer_name)"; \
+	INDEX_NAME="$(index_name)"; \
 	echo "Index: $$INDEX_NAME"; \
 	echo "GET $$NORMALIZED/indexes/$$INDEX_NAME/stats?api-version=$(SEARCH_API_VERSION)"; \
 	curl -sS -X GET "$$NORMALIZED/indexes/$$INDEX_NAME/stats?api-version=$(SEARCH_API_VERSION)" \
@@ -265,7 +268,6 @@ provision-job: require-acr-creds require-image-in-acr require-env cleanup-old-en
 	    AZURE_RESOURCE_GROUP_LOCATION=\"$(AZURE_RESOURCE_GROUP_LOCATION)\" \
 	    AZURE_CONTAINER_APP_ENV_NAME=\"$(AZURE_CONTAINER_APP_ENV_NAME)\" \
 	    WEBHOOK_URL=\"$(WEBHOOK_URL)\" \
-	    CUSTOMER_NAME_LIST=\"$(CUSTOMER_NAME_LIST)\" \
 	  --secrets \
 	    storage-conn-str=\"$(STORAGE_CONN_STR)\""
 
