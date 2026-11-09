@@ -20,6 +20,17 @@ class ETLSettings(BaseSettings):
     AZURE_CONTAINER_STORAGE_NAME: str | None = None
     AZURE_CONTAINER_STORAGE_SECRETS_NAME: str | None = None
     AZURE_CONTAINER_STORAGE_ETL_FILES_NAME: str | None = None
+    AZURE_CUSTOMER_REGISTRY_ACCOUNT_URL: str | None = Field(
+        None,
+        description="Blob storage account URL hosting the customer registry (informational)",
+    )
+    AZURE_CUSTOMER_REGISTRY_MANIFEST_CONTAINER: str | None = Field(
+        None, description="Container holding the customers.json manifest blob"
+    )
+    AZURE_CUSTOMER_REGISTRY_CONTAINER_PREFIX: str | None = Field(
+        None,
+        description="Prefix + customer_id = the per-customer registry container name",
+    )
     model_config = SettingsConfigDict(
         env_file=_etl_env_file,
         env_file_encoding="utf-8",
@@ -34,7 +45,6 @@ class AppSettings(BaseSettings):
     AZURE_SEARCH_SERVICE_PRIMARY_ADMIN_KEY: str
     AZURE_OPENAI_PRIMARY_KEY: str
     AZURE_SEARCH_ENDPOINT: str
-    AZURE_DEFAULT_AI_SEARCH_INDEX_NAME: str
     AZURE_OPENAI_ENDPOINT: str
     AZURE_OPENAI_SEARCH_EMBEDDING_DEPLOYMENT: str
     AZURE_OPENAI_SEARCH_EMBEDDING_API_VERSION: str

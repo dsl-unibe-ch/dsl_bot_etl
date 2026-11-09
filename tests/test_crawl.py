@@ -2,6 +2,8 @@
 
 from pathlib import Path
 
+import pytest
+
 from src.etl_crawler.spiders.link_spider import LinkSpider, _as_list
 
 
@@ -46,3 +48,40 @@ class TestLinkSpider:
         assert spider.start_urls == ["https://example.com"]
         assert spider.allowed_domains == ["example.com"]
         assert spider.static_pdfs == ["https://example.com/doc.pdf"]
+
+
+class TestRunBasicAuthSettings:
+    def test_sets_httpauth_settings_when_configured(
+        self, run_context, monkeypatch: pytest.MonkeyPatch
+    ):
+        from unittest.mock import patch
+
+        from src.etl_crawler.steps.crawl import run
+
+        monkeypatch.setenv("TEST_AUTH_USER", "alice")
+        monkeypatch.setenv("TEST_AUTH_PASS", "s3cret")
+        run_context.customer_config["basic_auth"] = {
+            "domain": "example.com",
+            "username_env": "TEST_AUTH_USER",
+            "password_env": "TEST_AUTH_PASS",
+        }
+
+        with patch("src.etl_crawler.steps.crawl.CrawlerProcess") as mock_process_cls:
+            run(run_context)
+
+        settings = mock_process_cls.call_args[0][0]
+        assert settings["HTTPAUTH_USER"] == "alice"
+        assert settings["HTTPAUTH_PASS"] == "s3cret"
+        assert settings["HTTPAUTH_DOMAIN"] == "example.com"
+
+    def test_no_httpauth_settings_when_not_configured(self, run_context):
+        from unittest.mock import patch
+
+        from src.etl_crawler.steps.crawl import run
+
+        with patch("src.etl_crawler.steps.crawl.CrawlerProcess") as mock_process_cls:
+            run(run_context)
+
+        settings = mock_process_cls.call_args[0][0]
+        assert not settings.get("HTTPAUTH_USER")
+        assert not settings.get("HTTPAUTH_DOMAIN")

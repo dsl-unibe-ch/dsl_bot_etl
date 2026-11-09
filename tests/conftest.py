@@ -5,7 +5,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from src.etl_crawler.config import AppSettings
+from src.etl_crawler.config import AppSettings, ETLSettings
 from src.etl_crawler.pipeline import RunContext
 
 
@@ -25,13 +25,26 @@ def mock_app_settings() -> AppSettings:
         "AZURE_SEARCH_SERVICE_PRIMARY_ADMIN_KEY": "fake-key",
         "AZURE_OPENAI_PRIMARY_KEY": "fake-key",
         "AZURE_SEARCH_ENDPOINT": "https://fake.search.windows.net",
-        "AZURE_DEFAULT_AI_SEARCH_INDEX_NAME": "test-index",
         "AZURE_OPENAI_ENDPOINT": "https://fake.openai.azure.com",
         "AZURE_OPENAI_SEARCH_EMBEDDING_DEPLOYMENT": "text-embedding-3-large",
         "AZURE_OPENAI_SEARCH_EMBEDDING_API_VERSION": "2024-02-01",
         "AZURE_OPENAI_CHAT_DEPLOYMENT": "gpt-4.1",
         "AZURE_OPENAI_CHAT_API_VERSION": "2024-12-01-preview",
         "AZURE_OPENAI_VECTORIZER_ENDPOINT": "https://fake.openai.azure.com",
+    })
+
+
+@pytest.fixture()
+def mock_etl_settings() -> ETLSettings:
+    """Return a mock ETLSettings with dummy registry values."""
+    return MagicMock(spec=ETLSettings, **{
+        "AZURE_STORAGE_ACCOUNT_PRIMARY_CONNECTION_STRING": "UseDevelopmentStorage=true",
+        "AZURE_CONTAINER_STORAGE_NAME": "dsl-bot-logs",
+        "AZURE_CONTAINER_STORAGE_SECRETS_NAME": "dsl-bot-secrets",
+        "AZURE_CONTAINER_STORAGE_ETL_FILES_NAME": "dsl-bot-etl-files",
+        "AZURE_CUSTOMER_REGISTRY_ACCOUNT_URL": "https://fake.blob.core.windows.net",
+        "AZURE_CUSTOMER_REGISTRY_MANIFEST_CONTAINER": "customer-registry",
+        "AZURE_CUSTOMER_REGISTRY_CONTAINER_PREFIX": "customer-registry-",
     })
 
 
@@ -54,4 +67,6 @@ def run_context(tmp_data_dir: Path, mock_app_settings: AppSettings, sample_custo
         data_dir=tmp_data_dir,
         customer_config=sample_customer_config,
         app_settings=mock_app_settings,
+        search_index_name="index_test_customer",
+        root_urls=["https://example.com"],
     )

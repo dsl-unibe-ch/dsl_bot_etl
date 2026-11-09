@@ -4,7 +4,15 @@ seed_urls:
   - https://www.bnf.unibe.ch/beratung/index_ger.html
   - https://www.bnf.unibe.ch/netzwerken/index_ger.html
   - https://www.bnf.unibe.ch/ueber_uns/index_ger.html
-allowed_domains: [www.unibe.ch, lead.unibe.ch]
+  # HTTP Basic Auth protected; credentials resolved via basic_auth below.
+  - https://www.bnf.unibe.ch/ueber_uns/bnfclosedusergroup/index_ger.html
+  # Tocco (ExtJS/DWR) renders this course table client-side; the plain URL is an
+  # empty shell to Scrapy. Tocco supports the legacy "_escaped_fragment_" AJAX
+  # crawling scheme, which returns the full table as plain server-rendered HTML
+  # (verified: page 1 ~85 rows, page 2 the remaining ~11 rows, no further pages).
+  - https://bnf.tocco.ch/de/bnf-start/kurse-coaching?_escaped_fragment_=
+  - https://bnf.tocco.ch/de/bnf-start/kurse-coaching?_escaped_fragment_=crawler_page=2
+allowed_domains: [www.unibe.ch, lead.unibe.ch, bnf.tocco.ch]
 allow:
   - /fuer_stellensuchende_rav/
   - /fuer_weitere_stellensuchende/
@@ -24,6 +32,11 @@ allow:
   - /publikationen/
 deny_domains:
   - edit.cms.unibe.ch
+# Credentials come from env vars (set in .env.etl, never committed here).
+basic_auth:
+  domain: www.bnf.unibe.ch
+  username_env: BNF_BASIC_AUTH_USER
+  password_env: BNF_BASIC_AUTH_PASSWORD
 feed:
   output: scripts/crawler/data/raw/bnf.jsonl
   format: jsonlines

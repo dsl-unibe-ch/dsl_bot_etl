@@ -7,9 +7,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import yaml
 from scrapy.crawler import CrawlerProcess
 from scrapy.utils.project import get_project_settings
 
+from src.etl_crawler.auth import resolve_basic_auth
 from src.etl_crawler.spiders.link_spider import LinkSpider
 
 if TYPE_CHECKING:
@@ -27,14 +29,11 @@ class CrawlResult:
 def run(run_context: RunContext) -> CrawlResult:
     """Run the link spider for the customer, writing url_list.jsonl."""
     output_path = run_context.data_dir / "url_list.jsonl"
-    config_path = (
-        Path(__file__).parent.parent
-        / "customer_configs"
-        / f"{run_context.customer_name}.yml"
+    # Resolved from the registry (or local YAML in dev/test) by pipeline.run_pipeline().
+    config_path = run_context.data_dir / "_resolved_crawl_config.yml"
+    config_path.write_text(
+        yaml.safe_dump(run_context.customer_config), encoding="utf-8"
     )
-
-    if not config_path.exists():
-        raise FileNotFoundError(f"Customer config not found: {config_path}")
 
     settings = get_project_settings()
     settings.update(
@@ -50,6 +49,15 @@ def run(run_context: RunContext) -> CrawlResult:
             "LOG_LEVEL": "INFO",
         }
     )
+
+    basic_auth = resolve_basic_auth(run_context.customer_config)
+    if basic_auth:
+        domain, username, password = basic_auth
+        # HTTPAUTH_DOMAIN scopes credentials to this exact host (+ subdomains),
+        # not the whole crawl -- other domains/customers are unaffected.
+        settings.set("HTTPAUTH_USER", username, priority="cmdline")
+        settings.set("HTTPAUTH_PASS", password, priority="cmdline")
+        settings.set("HTTPAUTH_DOMAIN", domain, priority="cmdline")
 
     process = CrawlerProcess(settings)
     process.crawl(LinkSpider, config=str(config_path))
