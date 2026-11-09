@@ -66,8 +66,8 @@ src/etl_crawler/
 │   ├── post_process.py    # Step 4: enrich via Azure OpenAI → processed_data.xlsx
 │   └── index.py           # Step 5: build Azure AI Search index
 ├── customer_configs/      # Per-customer crawl rules (YAML)
-│   ├── quality.yml
-│   └── innovation.yml
+│   ├── customerA.yml
+│   └── customerB.yml
 scripts/
 └── copy_secrets_from_container.py   # Download .env files from Azure Blob Storage
 └── smoke_test.py   # Validate AI Search indexes are healthy.
@@ -183,42 +183,47 @@ The bootstrap script (`scripts/copy_secrets_from_container.py`) uses the connect
 <details>
 <summary>Click to expand</summary>
 
-Customers are no longer hardcoded in `CUSTOMER_NAME_LIST`. Instead, the ETL discovers them from a registry stored in Azure Blob Storage (same storage account as `AZURE_STORAGE_ACCOUNT_PRIMARY_CONNECTION_STRING`):
+Customers are discovered from a registry ( either stored in Azure Blob Storage or locally (test purposes))
 
-- **Manifest container** (`AZURE_CUSTOMER_REGISTRY_MANIFEST_CONTAINER`, e.g. `customer-registry`) holds exactly one blob, `customers.json`:
-  ```json
-  {"customer_ids": ["bnf", "default"]}
-  ```
-- **Per-customer container** (`{AZURE_CUSTOMER_REGISTRY_CONTAINER_PREFIX}{customer_id}`, e.g. `customer-registry-bnf`) holds:
-  - `config.env` — a dotenv file shared with the backend repo. The ETL only reads `CUSTOMER_ID`, `CUSTOMER_ROOT_URLS` (a JSON array string, e.g. `["https://example.com"]`), `SEARCH_INDEX_NAME`, and `ETL_ENABLED`; all other keys (`BACKEND_*`, `FRONTEND_*`, `LIFECYCLE_STATUS`, ...) are ignored.
-  - `crawl_config.yml` — the production crawl rules (same shape as the local YAMLs in `customer_configs/`: `allowed_domains`, `allow`, `deny_domains`, `local_docs_dirs`, etc.). `CUSTOMER_ROOT_URLS` becomes the crawl's seed URLs; `crawl_config.yml` can optionally add more via `additional_seed_urls`. This merge only applies to the registry path -- with `local_crawl_rules=1`/`--local-crawl-rules`, the local YAML's own `seed_urls` are used as-is (self-contained, for free-form local iteration), and `CUSTOMER_ROOT_URLS`/`additional_seed_urls` are ignored.
-    - `basic_auth` (optional): for pages behind HTTP Basic Auth, e.g.:
-      ```yaml
-      basic_auth:
-        domain: www.example.com
-        username_env: EXAMPLE_BASIC_AUTH_USER
-        password_env: EXAMPLE_BASIC_AUTH_PASSWORD
+- `AZURE_CUSTOMER_REGISTRY_MANIFEST_CONTAINER` is the `customer-registry`) which holds `customers.json` defining the customers
+      ```json
+      {"customer_ids": ["bnf", "default"]}
       ```
-      These are env var *names*, never literal credentials — `crawl_config.yml`/local YAMLs are not secret stores. Set the actual values in `.env.etl` (local) or as Container App secrets (production). Customers without `basic_auth` are completely unaffected (no-op on both steps). Scoping differs slightly by step: the Scrapy crawl uses Scrapy's `HTTPAUTH_USER`/`HTTPAUTH_PASS`/`HTTPAUTH_DOMAIN` settings, which attach the header to every request to that exact host (and subdomains) — not just the one protected path, though public pages on the same host simply ignore the extra header. The Playwright extract step scopes credentials to the exact origin and only ever sends them in response to that origin's own 401 challenge, so no other site visited in the run is affected either way.
+- `AZURE_CUSTOMER_REGISTRY_CONTAINER_PREFIX}{customer_id}`, e.g. `customer-registry-bnf`) holds:
+  - `config.env` — a dotenv file owned and uploaded by the backend repo. The ETL only reads `CUSTOMER_ID`, `CUSTOMER_ROOT_URLS` (a JSON array string, e.g. `["https://example.com"]`), `SEARCH_INDEX_NAME`, and `ETL_ENABLED`; all other keys are ignored.
+  - `crawl_config.yml` — the production crawl rules (same shape as the local YAMLs in `customer_configs/`
 
-`SEARCH_INDEX_NAME` is used **literally** as the Azure AI Search index name — it is no longer derived as `index_{customer_name}`.
+`SEARCH_INDEX_NAME` is the Azure AI Search index name for the customer.
 
 Only customers with `ETL_ENABLED=True` are processed by `make pipeline-all-customers` / `python -m src.etl_crawler run-all`. A malformed manifest or a malformed customer `config.env` fails the whole run immediately (no local fallback); a customer with `ETL_ENABLED=False` is simply skipped.
 
 ### Onboarding a new customer
 
-1. Upload `config.env` and `crawl_config.yml` to the customer's registry container, and add the customer_id to `customers.json`.
-2. **Test crawl rules locally first**, without touching the registry's `crawl_config.yml`:
+1. Register the customer via the **backend repo** (`dsl_bot_backend`, see its README) — this creates the registry container's `config.env` blob and the `customers.json` entry
+2. Manually create a draft crawl-rules YAML at `src/etl_crawler/customer_configs/<customer_id>.yml` (refined in step 4)
+3. Upload this draft to the registry container as `crawl_config.yml`:
    ```bash
-   # Put a draft YAML at src/etl_crawler/customer_configs/<customer_id>.yml, then:
+   make upload-customer-etl-config customer_id=<customer_id>
+   ```
+4. **Test crawl rules locally first**, without touching the registry's `crawl_config.yml`:
+   ```bash
    make scrape customer_name=<customer_id> ENV=dev local_crawl_rules=1
    ```
-   Once satisfied, upload that same YAML to the registry container as `crawl_config.yml`.
-3. For a fast first deployment (rather than waiting for the next scheduled all-customers run):
+   Once satisfied, upload that same YAML to the registry container as `crawl_config.yml`:
+   ```bash
+   make upload-customer-etl-config customer_id=<customer_id>
+   ```
+5. For a fast first deployment (rather than waiting for the next scheduled all-customers run):
    ```bash
    make onboard-customer customer_id=<customer_id> ENV=dev
    ```
-4. From then on, the regular scheduled job (`make pipeline-all-customers`) picks the customer up automatically — no code change or redeploy needed.
+6. From then on, the regular scheduled job (`make pipeline-all-customers`) picks the customer up automatically — no code change or redeploy needed.
+
+### Offboarding a customer
+
+Set `ETL_ENABLED=False` in the customer's registry `config.env` (owned by the backend repo). The scheduled job then skips the customer quietly — no code change or redeploy needed.
+
+This only stops future ETL runs. Existing data is **not** cleaned up automatically; for full removal, manually delete the Azure AI Search index (`SEARCH_INDEX_NAME`), the customer's run artifacts in the ETL files container, and — via the backend repo — the registry entry itself.
 
 ### Access to the registry
 

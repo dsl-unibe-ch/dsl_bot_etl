@@ -8,6 +8,7 @@ AZURE_CONTAINER_REGISTRY_LOGIN_SERVER ?= $(shell [ -f .env.etl ] && grep '^AZURE
 AZURE_RESOURCE_GROUP_LOCATION ?= $(shell [ -f .env.etl ] && grep '^AZURE_RESOURCE_GROUP_LOCATION=' .env.etl | cut -d '=' -f2-)
 AZURE_CONTAINER_APP_ENV_NAME ?= $(shell [ -f .env.etl ] && grep '^AZURE_CONTAINER_APP_ENV_NAME=' .env.etl | cut -d '=' -f2-)
 STORAGE_CONN_STR ?= $(shell [ -f .env.etl ] && grep '^AZURE_STORAGE_ACCOUNT_PRIMARY_CONNECTION_STRING=' .env.etl | cut -d '=' -f2-)
+AZURE_CUSTOMER_REGISTRY_CONTAINER_PREFIX ?= $(shell [ -f .env.etl ] && grep '^AZURE_CUSTOMER_REGISTRY_CONTAINER_PREFIX=' .env.etl | cut -d '=' -f2-)
 AZURE_CONTAINER_STORAGE_ETL_FILES_NAME ?= $(shell [ -f .env.etl ] && grep '^AZURE_CONTAINER_STORAGE_ETL_FILES_NAME=' .env.etl | cut -d '=' -f2-)
 WEBHOOK_URL ?= $(shell [ -f .env.etl ] && grep '^WEBHOOK_URL=' .env.etl | cut -d '=' -f2-)
 
@@ -109,6 +110,30 @@ storage-diagnose:
 	az storage account show --name "$$account" \
 	  --query "{resourceGroup:resourceGroup,location:location,allowSharedKeyAccess:allowSharedKeyAccess,publicNetworkAccess:publicNetworkAccess,defaultAction:networkRuleSet.defaultAction,ipRules:networkRuleSet.ipRules}" \
 	  -o json
+
+
+# ---------- Customer registry ----------
+
+# Promote a locally tested crawl-rules YAML to the customer's registry container,
+# overwriting the production crawl_config.yml blob. Example:
+#   make upload-customer-etl-config customer_id=bnf
+upload-customer-etl-config:
+	@echo $@
+	@test -n "$(customer_id)" || (echo "Error: customer_id is required. Example: make upload-customer-etl-config customer_id=bnf"; exit 1)
+	@test -n "$(STORAGE_CONN_STR)" || (echo "Error: AZURE_STORAGE_ACCOUNT_PRIMARY_CONNECTION_STRING missing from .env.etl"; exit 1)
+	@test -n "$(AZURE_CUSTOMER_REGISTRY_CONTAINER_PREFIX)" || (echo "Error: AZURE_CUSTOMER_REGISTRY_CONTAINER_PREFIX missing from .env.etl"; exit 1)
+	@config_file="src/etl_crawler/customer_configs/$(customer_id).yml"; \
+	test -f "$$config_file" || { echo "Error: $$config_file not found."; exit 1; }; \
+	$(PYTHON) -c "import yaml; yaml.safe_load(open('$$config_file', encoding='utf-8'))" \
+	  || { echo "Error: $$config_file is not valid YAML."; exit 1; }; \
+	container="$(AZURE_CUSTOMER_REGISTRY_CONTAINER_PREFIX)$(customer_id)"; \
+	echo "Uploading $$config_file -> $$container/crawl_config.yml"; \
+	az storage blob upload \
+	  --connection-string "$(STORAGE_CONN_STR)" \
+	  --container-name "$$container" \
+	  --name crawl_config.yml \
+	  --file "$$config_file" \
+	  --overwrite
 
 
 # ---------- Container entrypoint (runs inside Docker) ----------
